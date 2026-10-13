@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: dc-ticket-bot
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: TOKEN
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: STAFF_ROLE_ID
+        sync: false
+      - key: TICKET_CATEGORY_ID
+        sync: false
+      - key: LOG_CHANNEL_ID
+        sync: false
+      - key: AUTO_ROLE_ID
+        sync: false
+      - key: WELCOME_CHANNEL_ID
+        sync: false
+      - key: WELCOME_MESSAGE
+        sync: false
