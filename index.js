@@ -61,6 +61,13 @@ function isStaff(member) {
   return false;
 }
 
+// NOVO: só ADMIN pode fechar/reabrir/deletar ticket
+function isAdmin(member) {
+  if (!member) return false;
+  return member.permissions.has(PermissionFlagsBits.Administrator);
+}
+const ADMIN_ONLY_MSG = '❌ Só **ADMIN** pode fechar/reabrir/deletar tickets.';
+
 function isTicketChannel(channel) {
   if (!channel || channel.type !== ChannelType.GuildText) return false;
   if (channel.name.startsWith('ticket-') || channel.name.startsWith('fechado-')) return true;
@@ -231,6 +238,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (commandName === 'fechar') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um canal de ticket.', ephemeral: true });
+        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         return askCloseConfirmation(interaction);
       }
 
@@ -278,7 +286,7 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'ajuda') {
         const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('❓ Ajuda — Bot de Tickets')
           .setDescription(
-            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/fechar` — fecha o ticket\n`/assumir` — assume atendimento\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot'
+            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/assumir` — assume atendimento\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot\n\n**Só ADMIN:**\n`/fechar` + botões 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar'
           );
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
@@ -314,6 +322,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (id === 'close_ticket') {
         if (!isTicketChannel(ch)) return interaction.reply({ content: '❌ Não é um ticket.', ephemeral: true });
+        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         return askCloseConfirmation(interaction);
       }
 
@@ -322,6 +331,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (id === 'confirm_close') {
+        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         await interaction.update({ content: '🔒 Fechando ticket...', embeds: [], components: [] });
         const ownerId = getTicketOwnerId(ch);
         // Tira permissão de falar do dono, mantém vendo
@@ -343,7 +353,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (id === 'reopen_ticket') {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe pode reabrir.', ephemeral: true });
+        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         const ownerId = getTicketOwnerId(ch);
         if (ownerId) await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch(() => null);
         await ch.setName(ch.name.replace(/^fechado-/, '').slice(0, 100)).catch(() => null);
@@ -351,7 +361,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (id === 'delete_ticket') {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe pode deletar.', ephemeral: true });
+        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         await interaction.reply('🗑️ Deletando em 5 segundos...');
         sendLog(ch.guild, logEmbed('DarkRed', '🗑️ Ticket deletado', `**Canal:** #${ch.name}\n**Deletado por:** ${interaction.user}`, interaction.user));
         setTimeout(() => ch.delete().catch(() => null), 5000);
