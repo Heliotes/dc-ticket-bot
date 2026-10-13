@@ -393,7 +393,7 @@ async function askCloseConfirmation(interaction) {
 client.once('ready', () => {
   console.log(`✅ Logado como ${client.user.tag}!`);
   console.log('📌 Agora rode: npm run deploy (uma vez) e depois use /painel-ticket no servidor');
-  client.user.setActivity('🎫 Tickets | /ajuda', { type: 3 }).catch(() => null);
+  try { client.user.setActivity('🎫 Tickets | /ajuda', { type: 3 }); } catch {}
 });
 
 // ---------- 7. Auto-role + Boas-vindas + Logs de entrada/saída ----------
