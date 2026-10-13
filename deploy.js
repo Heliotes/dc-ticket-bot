@@ -13,8 +13,8 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
 
 const commands = [
   new SlashCommandBuilder().setName('painel-ticket').setDescription('[EQUIPE] Posta o painel de tickets com menu').toJSON(),
-  new SlashCommandBuilder().setName('fechar').setDescription('Fecha o ticket atual').toJSON(),
-  new SlashCommandBuilder().setName('assumir').setDescription('[EQUIPE] Assume o atendimento do ticket').toJSON(),
+  new SlashCommandBuilder().setName('fechar').setDescription('[ADMIN] Fecha o ticket atual').toJSON(),
+  new SlashCommandBuilder().setName('assumir').setDescription('[ADMIN] Assume o atendimento do ticket').toJSON(),
   new SlashCommandBuilder()
     .setName('adicionar').setDescription('[EQUIPE] Adiciona alguém ao ticket')
     .addUserOption((o) => o.setName('usuario').setDescription('Quem adicionar?').setRequired(true)).toJSON(),

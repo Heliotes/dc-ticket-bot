@@ -72,7 +72,7 @@ function isAdmin(member) {
   if (!member) return false;
   return member.permissions.has(PermissionFlagsBits.Administrator);
 }
-const ADMIN_ONLY_MSG = '❌ Só **ADMIN** pode fechar/reabrir/deletar tickets.';
+const ADMIN_ONLY_MSG = '❌ Só **ADMIN** pode fazer isso (fechar/reabrir/deletar/assumir).';
 
 function isTicketChannel(channel) {
   if (!channel || channel.type !== ChannelType.GuildText) return false;
@@ -277,7 +277,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (commandName === 'assumir') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
-        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe pode assumir.', ephemeral: true });
+        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         await interaction.channel.setTopic(`${interaction.channel.topic || ''} | Assumido por:${interaction.user.tag}`);
         return interaction.reply(`🙋 Ticket assumido por ${interaction.user}!`);
       }
@@ -293,7 +293,7 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'ajuda') {
         const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('❓ Ajuda — Bot de Tickets')
           .setDescription(
-            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/assumir` — assume atendimento\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot\n`/anunciar` — posta anúncio bonito\n\n**Só ADMIN:**\n`/fechar` + botões 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐, auto-close inativo, anti-link/palavrão'
+            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot\n`/anunciar` — posta anúncio bonito\n\n**Só ADMIN:**\n`/fechar` + `/assumir` + botões 🙋 Assumir / 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐ (chega na sua DM), auto-close inativo, anti-link/palavrão'
           );
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
@@ -354,12 +354,26 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- Avaliação 1-5 (aparece ao fechar) -----
+    // ----- Avaliação 1-5 (só o DONO vota, resultado vai na DM do admin) -----
     if (interaction.isStringSelectMenu() && interaction.customId === 'rate_ticket') {
       const nota = interaction.values[0];
+      const ownerId = getTicketOwnerId(interaction.channel);
+      if (ownerId && interaction.user.id !== ownerId) {
+        return interaction.reply({ content: '❌ Só o dono do ticket pode avaliar.', ephemeral: true });
+      }
       const stars = '⭐'.repeat(parseInt(nota)) || '⭐';
       await interaction.reply({ content: `Obrigado! Avaliação registrada: ${stars} (${nota}/5)`, ephemeral: true });
       sendLog(interaction.guild, logEmbed('Gold', '⭐ Avaliação recebida', `**Canal:** #${interaction.channel.name}\n**Nota:** ${stars} (${nota}/5)`, interaction.user));
+      // DM pro admin que fechou com o resultado
+      try {
+        const m = (interaction.channel.topic || '').match(/FechadoPor:(\d+)/);
+        if (m && m[1] !== interaction.user.id) {
+          const admin = await client.users.fetch(m[1]).catch(() => null);
+          if (admin) {
+            await admin.send(`⭐ **Avaliação recebida!**\n**Ticket:** #${interaction.channel.name}\n**De:** ${interaction.user.tag}\n**Nota:** ${stars} (${nota}/5)`).catch(() => null);
+          }
+        }
+      } catch {}
       return;
     }
 
@@ -382,10 +396,12 @@ client.on('interactionCreate', async (interaction) => {
         if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         await interaction.update({ content: '🔒 Fechando ticket...', embeds: [], components: [] });
         const ownerId = getTicketOwnerId(ch);
+        const closerId = interaction.user.id;
         // Tira permissão de falar do dono, mantém vendo
         if (ownerId) {
           await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, ReadMessageHistory: true, SendMessages: false }).catch(() => null);
         }
+        await ch.setTopic(`${ch.topic || ''} | FechadoPor:${closerId}`).catch(() => null);
         if (!ch.name.startsWith('fechado-')) await ch.setName(`fechado-${ch.name}`.slice(0, 100)).catch(() => null);
 
         const row = new ActionRowBuilder().addComponents(
@@ -401,6 +417,18 @@ client.on('interactionCreate', async (interaction) => {
           .setPlaceholder('⭐ Avalie o atendimento (1-5)...')
           .addOptions([1, 2, 3, 4, 5].map((n) => ({ label: `${'⭐'.repeat(n)} (${n}/5)`, value: `${n}`, emoji: '⭐' })));
         await ch.send({ content: 'Sua opinião ajuda a melhorar! (só o dono precisa votar)', components: [new ActionRowBuilder().addComponents(rateMenu)] }).catch(() => null);
+        // DM pro dono pedindo avaliação (se a DM tiver fechada, ignora)
+        if (ownerId) {
+          try {
+            const owner = await client.users.fetch(ownerId).catch(() => null);
+            if (owner) {
+              const dmEmbed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('🔒 Seu ticket foi fechado')
+                .setDescription(`O ticket **#${ch.name}** foi fechado por ${interaction.user}.\n\nVolte ao canal ${ch} e vote de **1 a 5 ⭐** no menu de avaliação!`)
+                .setTimestamp();
+              await owner.send({ embeds: [dmEmbed] }).catch(() => null);
+            }
+          } catch {}
+        }
         sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}`, interaction.user));
         return;
       }
@@ -423,7 +451,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (id === 'claim_ticket') {
         if (!isTicketChannel(ch)) return interaction.reply({ content: '❌ Não é um ticket.', ephemeral: true });
-        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe pode assumir.', ephemeral: true });
+        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
         await ch.setTopic(`${ch.topic || ''} | Assumido por:${interaction.user.tag}`).catch(() => null);
         return interaction.reply(`🙋 ${interaction.user} assumiu o atendimento!`);
       }
