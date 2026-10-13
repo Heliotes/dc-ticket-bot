@@ -14,6 +14,9 @@ const {
   ChannelType,
   PermissionFlagsBits,
   AttachmentBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require('discord.js');
 
 // ---------- 1. Validação segura das variáveis ----------
@@ -25,6 +28,9 @@ const EMBED_COLOR = process.env.EMBED_COLOR || '#5865F2';
 const AUTO_ROLE_ID = process.env.AUTO_ROLE_ID || null;
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || null;
 const WELCOME_MESSAGE = process.env.WELCOME_MESSAGE || 'Olá {user}, bem-vindo(a) ao **{server}**! 🎉';
+const INACTIVE_HOURS = parseFloat(process.env.INACTIVE_HOURS || '24'); // 0 = desativa auto-close
+const ANTILINK = (process.env.ANTILINK || 'true').toLowerCase() === 'true';
+const BADWORDS = (process.env.BADWORDS || 'fdp,vsf,otario,otário,idiota,lixo').split(',').map((w) => w.trim().toLowerCase()).filter(Boolean);
 
 if (!TOKEN || TOKEN === 'seu_token_aqui') {
   console.error('❌ Faltou o TOKEN no arquivo .env! Veja o .env.example e o README.');
@@ -41,7 +47,7 @@ app.listen(PORT, () => console.log(`🌐 Keep-alive rodando na porta ${PORT}`));
 
 // ---------- 3. Client ----------
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   partials: [Partials.Channel, Partials.GuildMember],
 });
 
@@ -99,7 +105,7 @@ function logEmbed(color, title, desc, user, fields = []) {
 }
 
 // ---------- 4. Criar ticket ----------
-async function createTicket(interaction, typeKey) {
+async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   const type = TICKET_TYPES[typeKey] || TICKET_TYPES.suporte;
   const guild = interaction.guild;
   const user = interaction.user;
@@ -137,11 +143,12 @@ async function createTicket(interaction, typeKey) {
 
   const channelName = `ticket-${user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12)}-${Math.floor(Math.random() * 9000 + 1000)}`;
 
+  const motivoCurto = String(motivo || 'Não informado').slice(0, 200).replace(/\n/g, ' ');
   const channel = await guild.channels.create({
     name: channelName,
     type: ChannelType.GuildText,
     parent: TICKET_CATEGORY_ID || null,
-    topic: `TICKET:${user.id} | Tipo:${typeKey} | Criado:${new Date().toISOString()}`,
+    topic: `TICKET:${user.id} | Tipo:${typeKey} | Criado:${new Date().toISOString()} | Motivo:${motivoCurto}`,
     permissionOverwrites: overwrites,
   }).catch((e) => {
     console.error('Erro ao criar canal:', e);
@@ -156,7 +163,7 @@ async function createTicket(interaction, typeKey) {
     .setColor(EMBED_COLOR)
     .setTitle(`${type.emoji} ${type.label} — Ticket de ${user.username}`)
     .setDescription(
-      `Olá ${user}, a equipe já foi chamada!\n\n**Tipo:** ${type.label}\n**Descreva seu problema** com o máximo de detalhes.\n\nAguarde um atendente. Não marque ninguém à toa.`
+      `Olá ${user}, a equipe já foi chamada!\n\n**Tipo:** ${type.label}\n**Motivo:** ${String(motivo || 'Não informado').slice(0, 1000)}\n\nDescreva com mais detalhes se precisar. Aguarde um atendente.`
     )
     .setFooter({ text: 'Use os botões abaixo para gerenciar' })
     .setTimestamp();
@@ -286,7 +293,7 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'ajuda') {
         const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('❓ Ajuda — Bot de Tickets')
           .setDescription(
-            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/assumir` — assume atendimento\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot\n\n**Só ADMIN:**\n`/fechar` + botões 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar'
+            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/assumir` — assume atendimento\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot\n`/anunciar` — posta anúncio bonito\n\n**Só ADMIN:**\n`/fechar` + botões 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐, auto-close inativo, anti-link/palavrão'
           );
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
@@ -305,13 +312,54 @@ client.on('interactionCreate', async (interaction) => {
           ).setTimestamp();
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
+
+      if (commandName === 'anunciar') {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe pode anunciar.', ephemeral: true });
+        const canal = interaction.options.getChannel('canal', true);
+        const titulo = interaction.options.getString('titulo', true);
+        const mensagem = interaction.options.getString('mensagem', true).replace(/\\n/g, '\n');
+        const cor = interaction.options.getString('cor') || EMBED_COLOR;
+        if (!canal.isTextBased()) return interaction.reply({ content: '❌ Escolha um canal de texto.', ephemeral: true });
+        const embed = new EmbedBuilder().setColor(cor).setTitle(titulo.slice(0, 256)).setDescription(mensagem.slice(0, 4000))
+          .setFooter({ text: `Anúncio por ${interaction.user.tag}` }).setTimestamp();
+        await canal.send({ embeds: [embed] }).catch(() => null);
+        sendLog(interaction.guild, logEmbed('Blue', '📢 Anúncio enviado', `**Canal:** ${canal}\n**Título:** ${titulo.slice(0, 100)}`, interaction.user));
+        return interaction.reply({ content: `✅ Anúncio postado em ${canal}!`, ephemeral: true });
+      }
       return;
     }
 
-    // ----- Select menu: escolheu tipo -----
+    // ----- Select menu: escolheu tipo → pede MOTIVO (modal) -----
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_ticket_type') {
       const typeKey = interaction.values[0];
-      await createTicket(interaction, typeKey);
+      const type = TICKET_TYPES[typeKey] || TICKET_TYPES.suporte;
+      const modal = new ModalBuilder().setCustomId(`modal_motivo_${typeKey}`).setTitle(`Novo ticket: ${type.label.slice(0, 30)}`);
+      const input = new TextInputBuilder()
+        .setCustomId('motivo')
+        .setLabel('Descreva o motivo (obrigatório)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Ex: Fui banido sem motivo, quero revisão...')
+        .setMinLength(5)
+        .setMaxLength(500)
+        .setRequired(true);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return interaction.showModal(modal);
+    }
+
+    // ----- Modal: motivo enviado → cria o ticket -----
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_motivo_')) {
+      const typeKey = interaction.customId.replace('modal_motivo_', '');
+      const motivo = interaction.fields.getTextInputValue('motivo');
+      await createTicket(interaction, typeKey, motivo);
+      return;
+    }
+
+    // ----- Avaliação 1-5 (aparece ao fechar) -----
+    if (interaction.isStringSelectMenu() && interaction.customId === 'rate_ticket') {
+      const nota = interaction.values[0];
+      const stars = '⭐'.repeat(parseInt(nota)) || '⭐';
+      await interaction.reply({ content: `Obrigado! Avaliação registrada: ${stars} (${nota}/5)`, ephemeral: true });
+      sendLog(interaction.guild, logEmbed('Gold', '⭐ Avaliação recebida', `**Canal:** #${interaction.channel.name}\n**Nota:** ${stars} (${nota}/5)`, interaction.user));
       return;
     }
 
@@ -346,8 +394,13 @@ client.on('interactionCreate', async (interaction) => {
           new ButtonBuilder().setCustomId('delete_ticket').setLabel('Deletar').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
         );
         const embed = new EmbedBuilder().setColor('Red').setTitle('🔒 Ticket fechado')
-          .setDescription(`Fechado por ${interaction.user}\n\nReabra, gere transcript ou delete em 5s (digite!).`).setTimestamp();
+          .setDescription(`Fechado por ${interaction.user}\n\nReabra, gere transcript ou delete.\n\n**Dono do ticket:** avalie o atendimento no menu abaixo! 👇`).setTimestamp();
         await ch.send({ embeds: [embed], components: [row] });
+        const rateMenu = new StringSelectMenuBuilder()
+          .setCustomId('rate_ticket')
+          .setPlaceholder('⭐ Avalie o atendimento (1-5)...')
+          .addOptions([1, 2, 3, 4, 5].map((n) => ({ label: `${'⭐'.repeat(n)} (${n}/5)`, value: `${n}`, emoji: '⭐' })));
+        await ch.send({ content: 'Sua opinião ajuda a melhorar! (só o dono precisa votar)', components: [new ActionRowBuilder().addComponents(rateMenu)] }).catch(() => null);
         sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}`, interaction.user));
         return;
       }
@@ -404,6 +457,55 @@ client.once('ready', () => {
   console.log(`✅ Logado como ${client.user.tag}!`);
   console.log('📌 Agora rode: npm run deploy (uma vez) e depois use /painel-ticket no servidor');
   try { client.user.setActivity('🎫 Tickets | /ajuda', { type: 3 }); } catch {}
+  // Auto-close: checa a cada 10 min
+  if (INACTIVE_HOURS > 0) {
+    setInterval(autoCloseInactive, 10 * 60 * 1000);
+    console.log(`⏰ Auto-close ativo: fecha tickets parados há +${INACTIVE_HOURS}h`);
+  }
+});
+
+// ---------- 7b. Auto-close de tickets inativos ----------
+async function autoCloseInactive() {
+  try {
+    for (const [, guild] of client.guilds.cache) {
+      const tickets = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText && c.name.startsWith('ticket-'));
+      for (const [, ch] of tickets) {
+        try {
+          const last = await ch.messages.fetch({ limit: 1 }).catch(() => null);
+          const lastMsg = last && last.first();
+          if (!lastMsg) continue;
+          const hoursIdle = (Date.now() - lastMsg.createdTimestamp) / 3600000;
+          if (hoursIdle >= INACTIVE_HOURS) {
+            const ownerId = getTicketOwnerId(ch);
+            if (ownerId) await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, ReadMessageHistory: true, SendMessages: false }).catch(() => null);
+            await ch.setName(`fechado-${ch.name}`.slice(0, 100)).catch(() => null);
+            await ch.send('⏰ **Ticket fechado automaticamente por inatividade.** Use 🔓 para reabrir (ADMIN) ou 📝 para transcript.').catch(() => null);
+            sendLog(guild, logEmbed('Orange', '⏰ Auto-close', `**Canal:** #${ch.name}\n**Parado há:** ${hoursIdle.toFixed(1)}h`, null));
+          }
+        } catch {}
+      }
+    }
+  } catch (e) { console.error('Erro no auto-close:', e); }
+}
+
+// ---------- 7c. Anti-link + anti-palavrão ----------
+const INVITE_RE = /(discord\.gg\/|discord\.com\/invite\/|discordapp\.com\/invite\/)/i;
+client.on('messageCreate', async (msg) => {
+  try {
+    if (!msg.guild || msg.author.bot) return;
+    const member = msg.member;
+    if (isStaff(member)) return; // equipe pode postar link
+    const content = msg.content || '';
+    const isLink = ANTILINK && INVITE_RE.test(content);
+    const low = content.toLowerCase();
+    const hasBad = BADWORDS.length > 0 && BADWORDS.some((w) => low.includes(w));
+    if (!isLink && !hasBad) return;
+    await msg.delete().catch(() => null);
+    const motivo = isLink ? 'link de convite' : 'palavra proibida';
+    const warn = await msg.channel.send(`⚠️ ${msg.author}, ${motivo} não é permitido aqui!`).catch(() => null);
+    if (warn) setTimeout(() => warn.delete().catch(() => null), 8000);
+    sendLog(msg.guild, logEmbed('Orange', '🛡️ Auto-mod', `**Por:** ${msg.author}\n**Canal:** ${msg.channel}\n**Motivo:** ${motivo}\n**Mensagem:** ${content.slice(0, 500)}`, msg.author));
+  } catch {}
 });
 
 // ---------- 7. Auto-role + Boas-vindas + Logs de entrada/saída ----------

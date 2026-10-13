@@ -27,6 +27,11 @@ const commands = [
   new SlashCommandBuilder().setName('transcript').setDescription('Gera o histórico do ticket em .txt').toJSON(),
   new SlashCommandBuilder().setName('ajuda').setDescription('Mostra ajuda do bot').toJSON(),
   new SlashCommandBuilder().setName('stats').setDescription('Mostra tickets abertos e status').toJSON(),
+  new SlashCommandBuilder().setName('anunciar').setDescription('[EQUIPE] Posta um anúncio bonito em um canal')
+    .addChannelOption((o) => o.setName('canal').setDescription('Onde postar?').setRequired(true))
+    .addStringOption((o) => o.setName('titulo').setDescription('Título do anúncio').setRequired(true))
+    .addStringOption((o) => o.setName('mensagem').setDescription('Texto (use \\n pra pular linha)').setRequired(true))
+    .addStringOption((o) => o.setName('cor').setDescription('Cor hex. Ex: #FF0000').setRequired(false)).toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);

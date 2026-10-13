@@ -24,3 +24,9 @@ services:
         sync: false
       - key: WELCOME_MESSAGE
         sync: false
+      - key: INACTIVE_HOURS
+        sync: false
+      - key: ANTILINK
+        sync: false
+      - key: BADWORDS
+        sync: false
