@@ -394,15 +394,24 @@ client.on('interactionCreate', async (interaction) => {
 
       if (id === 'confirm_close') {
         if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
-        await interaction.update({ content: '🔒 Fechando ticket...', embeds: [], components: [] });
+        // Confirma de cara (evita "interaction failed") e depois executa
+        try { await interaction.update({ content: '🔒 Fechando ticket...', embeds: [], components: [] }); }
+        catch { try { await interaction.deferUpdate(); } catch {} }
         const ownerId = getTicketOwnerId(ch);
         const closerId = interaction.user.id;
-        // Tira permissão de falar do dono, mantém vendo
+        const falhas = [];
+        // 1) Tira permissão de falar do dono, mantém vendo
         if (ownerId) {
-          await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, ReadMessageHistory: true, SendMessages: false }).catch(() => null);
+          const r = await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, ReadMessageHistory: true, SendMessages: false }).catch((e) => e);
+          if (r instanceof Error) falhas.push('permissão do dono');
         }
-        await ch.setTopic(`${ch.topic || ''} | FechadoPor:${closerId}`).catch(() => null);
-        if (!ch.name.startsWith('fechado-')) await ch.setName(`fechado-${ch.name}`.slice(0, 100)).catch(() => null);
+        // 2) Salva quem fechou no tópico
+        await ch.setTopic(`${ch.topic || ''} | FechadoPor:${closerId}`.slice(0, 1024)).catch(() => falhas.push('tópico'));
+        // 3) Renomeia pra fechado-*
+        if (!ch.name.startsWith('fechado-')) {
+          const r = await ch.setName(`fechado-${ch.name}`.slice(0, 100)).catch((e) => e);
+          if (r instanceof Error) falhas.push('renomear (bot precisa de Gerenciar Canais)');
+        }
 
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('reopen_ticket').setLabel('Reabrir').setStyle(ButtonStyle.Success).setEmoji('🔓'),
@@ -411,7 +420,15 @@ client.on('interactionCreate', async (interaction) => {
         );
         const embed = new EmbedBuilder().setColor('Red').setTitle('🔒 Ticket fechado')
           .setDescription(`Fechado por ${interaction.user}\n\nReabra, gere transcript ou delete.\n\n**Dono do ticket:** avalie o atendimento no menu abaixo! 👇`).setTimestamp();
-        await ch.send({ embeds: [embed], components: [row] });
+        const postado = await ch.send({ embeds: [embed], components: [row] }).catch((e) => e);
+        if (postado instanceof Error) {
+          // Sem permissão de falar? Avisa quem fechou na DM e no log
+          try { await interaction.user.send(`⚠️ Fechei o ticket **#${ch.name}** mas não consegui postar nele (sem permissão de Enviar Mensagens).`).catch(() => null); } catch {}
+          sendLog(ch.guild, logEmbed('Red', '⚠️ Ticket fechado com falhas', `**Canal:** #${ch.name}\n**Falhas:** postar msg + ${falhas.join(', ')}`, interaction.user));
+          try { await interaction.followUp({ content: `🔒 Ticket trancado, mas tive falhas: ${['postar msg', ...falhas].join(', ')}.`, ephemeral: true }); } catch {}
+          return;
+        }
+        if (falhas.length) await ch.send(`⚠️ Avisos (não críticos): ${falhas.join(', ')}.`).catch(() => null);
         const rateMenu = new StringSelectMenuBuilder()
           .setCustomId('rate_ticket')
           .setPlaceholder('⭐ Avalie o atendimento (1-5)...')
@@ -465,9 +482,15 @@ client.on('interactionCreate', async (interaction) => {
     }
   } catch (err) {
     console.error('Erro na interação:', err);
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      interaction.reply({ content: '❌ Deu um erro. Tente de novo.', ephemeral: true }).catch(() => null);
-    }
+    try {
+      if (interaction.isRepliable()) {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: '❌ Deu um erro. Tente de novo.', ephemeral: true });
+        } else {
+          await interaction.followUp({ content: `❌ Deu um erro aqui: ${String(err.message || err).slice(0, 300)}`, ephemeral: true });
+        }
+      }
+    } catch {}
   }
 });
 
