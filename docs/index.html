@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🎫 Painel do Bot</title>
+<style>
+body{background:#0f1117;color:#e6e6e6;font-family:system-ui,sans-serif;margin:0;padding:20px;max-width:900px;margin:auto}
+h1{font-size:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
+.card{background:#1a1d27;border-radius:10px;padding:14px}.card b{font-size:22px;display:block}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid #2a2e3d;padding:8px;text-align:left}
+th{color:#9aa3b2}.small{color:#9aa3b2;font-size:12px}
+button{background:#5865f2;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;margin-right:8px}
+input{background:#1a1d27;color:#fff;border:1px solid #2a2e3d;border-radius:8px;padding:8px;width:100%;box-sizing:border-box;margin:4px 0 12px}
+label{font-size:13px;color:#9aa3b2}
+</style>
+</head>
+<body>
+<h1>🎫 Painel do Bot <span class="small" id="bot"></span></h1>
+<div id="cfg">
+  <label>URL da API do bot (ex: https://seu-bot.onrender.com)</label>
+  <input id="api" placeholder="https://seu-bot.onrender.com">
+  <label>Chave de admin (ADMIN_KEY)</label>
+  <input id="key" type="password" placeholder="ADMIN_KEY">
+  <button onclick="save()">💾 Salvar e carregar</button>
+  <p class="small">Os dados ficam salvos só no seu navegador. A API precisa estar online (Render).</p>
+</div>
+<div class="cards" id="cards"></div>
+<button onclick="load()">🔄 Atualizar</button> <span class="small">auto a cada 15s</span>
+<h2>📋 Últimos eventos</h2>
+<table><thead><tr><th>Hora</th><th>Tipo</th><th>Detalhe</th></tr></thead><tbody id="ev"></tbody></table>
+<script>
+function cfg(){
+  return {
+    api: (localStorage.getItem('api') || '').replace(/\/$/, ''),
+    key: localStorage.getItem('admkey') || ''
+  };
+}
+function save(){
+  localStorage.setItem('api', document.getElementById('api').value.trim().replace(/\/$/, ''));
+  localStorage.setItem('admkey', document.getElementById('key').value.trim());
+  load();
+}
+(function init(){
+  document.getElementById('api').value = localStorage.getItem('api') || '';
+  if(!localStorage.getItem('admkey') || !localStorage.getItem('api')){
+    document.getElementById('ev').innerHTML = '<tr><td colspan=3>Configure a URL da API + chave acima 👆</td></tr>';
+    return;
+  }
+  load(); setInterval(load, 15000);
+})();
+async function load(){
+  const { api, key } = cfg();
+  if(!api || !key) return;
+  try{
+    const s = await (await fetch(api + '/api/stats?key=' + encodeURIComponent(key))).json();
+    if(s.bot === undefined) throw 0;
+    document.getElementById('bot').textContent = s.bot + ' • ' + String(s.now).replace('T',' ').slice(0,19);
+    document.getElementById('cards').innerHTML =
+      card('🟢 Status','Online') + card('⏱️ Uptime', s.uptime) + card('📶 Ping', s.ping + 'ms') +
+      card('🏠 Servidores', s.guilds) + card('🎫 Abertos', s.abertos) + card('🔒 Fechados', s.fechados);
+    const e = await (await fetch(api + '/api/events?key=' + encodeURIComponent(key))).json();
+    document.getElementById('ev').innerHTML = e.map(x =>
+      '<tr><td class="small">' + String(x.t).replace('T',' ').slice(0,19) + '</td><td>' + x.type + '</td><td>' + x.text + '</td></tr>').join('') || '<tr><td colspan=3>Nenhum evento ainda</td></tr>';
+  }catch(err){ document.getElementById('ev').innerHTML = '<tr><td colspan=3>Não conectou na API. Confira URL/chave e se o bot tá online.</td></tr>'; }
+}
+function card(t,v){ return '<div class="card">' + t + '<b>' + v + '</b></div>'; }
+</script>
+</body>
+</html>

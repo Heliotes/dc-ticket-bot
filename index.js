@@ -45,6 +45,13 @@ if (!TOKEN || TOKEN === 'seu_token_aqui') {
 // ---------- 2. Keep-alive + PAINEL WEB de administração ----------
 const app = express();
 app.get('/health', (req, res) => res.json({ status: 'online', uptime: process.uptime() }));
+// CORS liberado na API pra página estática do GitHub Pages poder ler os dados
+app.use('/api', (req, res, next) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Headers', 'x-admin-key, content-type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 const ADMIN_KEY = process.env.ADMIN_KEY || '';
 function needKey(req, res, next) {
