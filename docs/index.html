@@ -6,29 +6,75 @@
 <title>🎫 Painel do Bot</title>
 <style>
 body{background:#0f1117;color:#e6e6e6;font-family:system-ui,sans-serif;margin:0;padding:20px;max-width:900px;margin:auto}
-h1{font-size:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
+h1{font-size:22px}h2{font-size:17px;margin-top:26px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
 .card{background:#1a1d27;border-radius:10px;padding:14px}.card b{font-size:22px;display:block}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid #2a2e3d;padding:8px;text-align:left}
 th{color:#9aa3b2}.small{color:#9aa3b2;font-size:12px}
-button{background:#5865f2;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;margin-right:8px}
-input{background:#1a1d27;color:#fff;border:1px solid #2a2e3d;border-radius:8px;padding:8px;width:100%;box-sizing:border-box;margin:4px 0 12px}
+button{background:#5865f2;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;margin:4px 6px 4px 0}
+button.danger{background:#ed4245}button.ok{background:#57f287;color:#06240f}
+button:disabled{opacity:.5}
+input,select,textarea{background:#1a1d27;color:#fff;border:1px solid #2a2e3d;border-radius:8px;padding:8px;width:100%;box-sizing:border-box;margin:4px 0 12px}
 label{font-size:13px;color:#9aa3b2}
+#msg{margin:10px 0;font-weight:bold}
+.panel{background:#14161d;border:1px solid #2a2e3d;border-radius:10px;padding:14px;margin-top:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 </style>
 </head>
 <body>
 <h1>🎫 Painel do Bot <span class="small" id="bot"></span></h1>
-<div id="cfg">
+<div>
   <label>URL da API do bot (ex: https://seu-bot.onrender.com)</label>
   <input id="api" placeholder="https://seu-bot.onrender.com">
   <label>Chave de admin (ADMIN_KEY)</label>
   <input id="key" type="password" placeholder="ADMIN_KEY">
   <button onclick="save()">💾 Salvar e carregar</button>
-  <p class="small">Os dados ficam salvos só no seu navegador. A API precisa estar online (Render).</p>
+  <p class="small">Dados salvos só no seu navegador. A API precisa estar online (Render).</p>
 </div>
 <div class="cards" id="cards"></div>
 <button onclick="load()">🔄 Atualizar</button> <span class="small">auto a cada 15s</span>
+<div id="msg"></div>
+
+<h2>🎫 Administrar tickets</h2>
+<div class="panel">
+  <label>Ticket</label>
+  <select id="ch"></select>
+  <div class="row">
+    <button onclick="act('assumir')">🙋 Assumir</button>
+    <button onclick="act('fechar')">🔒 Fechar</button>
+    <button onclick="act('reabrir')" class="ok">🔓 Reabrir</button>
+    <button onclick="act('transcript')">📝 Baixar transcript</button>
+    <button onclick="if(confirm('Deletar o canal?'))act('deletar')" class="danger">🗑️ Deletar</button>
+  </div>
+  <div class="row">
+    <select id="pri" style="width:auto">
+      <option value="baixa">🟢 Baixa</option>
+      <option value="media">🟡 Média</option>
+      <option value="alta">🟠 Alta</option>
+      <option value="urgente">🔴 Urgente</option>
+    </select>
+    <button onclick="act('prioridade')">⚡ Definir prioridade</button>
+  </div>
+  <div class="row">
+    <input id="qtd" type="number" value="10" min="1" max="100" style="width:90px">
+    <button onclick="act('limpar')">🧹 Limpar msgs</button>
+  </div>
+</div>
+
+<h2>📢 Anunciar</h2>
+<div class="panel">
+  <label>ID do canal de destino (botão direito no canal > Copiar ID)</label>
+  <input id="acan" placeholder="ID do canal">
+  <label>Título</label>
+  <input id="atit" placeholder="Título do anúncio">
+  <label>Mensagem</label>
+  <textarea id="amsg" rows="3" placeholder="Texto do anúncio"></textarea>
+  <button onclick="anunciar()">📢 Postar anúncio</button>
+</div>
+
 <h2>📋 Últimos eventos</h2>
 <table><thead><tr><th>Hora</th><th>Tipo</th><th>Detalhe</th></tr></thead><tbody id="ev"></tbody></table>
+
 <script>
 function cfg(){
   return {
@@ -41,6 +87,7 @@ function save(){
   localStorage.setItem('admkey', document.getElementById('key').value.trim());
   load();
 }
+function say(t, ok){ document.getElementById('msg').innerHTML = (ok === false ? '❌ ' : '✅ ') + t; }
 (function init(){
   document.getElementById('api').value = localStorage.getItem('api') || '';
   if(!localStorage.getItem('admkey') || !localStorage.getItem('api')){
@@ -59,10 +106,43 @@ async function load(){
     document.getElementById('cards').innerHTML =
       card('🟢 Status','Online') + card('⏱️ Uptime', s.uptime) + card('📶 Ping', s.ping + 'ms') +
       card('🏠 Servidores', s.guilds) + card('🎫 Abertos', s.abertos) + card('🔒 Fechados', s.fechados);
+    const chs = await (await fetch(api + '/api/channels?key=' + encodeURIComponent(key))).json();
+    const sel = document.getElementById('ch');
+    const cur = sel.value;
+    sel.innerHTML = chs.map(c => '<option value="' + c.id + '"' + (c.fechado ? '>' : '>') + '#' + c.name + (c.fechado ? ' (fechado)' : '') + '</option>').join('') || '<option value="">sem tickets</option>';
+    if(cur) sel.value = cur;
     const e = await (await fetch(api + '/api/events?key=' + encodeURIComponent(key))).json();
     document.getElementById('ev').innerHTML = e.map(x =>
       '<tr><td class="small">' + String(x.t).replace('T',' ').slice(0,19) + '</td><td>' + x.type + '</td><td>' + x.text + '</td></tr>').join('') || '<tr><td colspan=3>Nenhum evento ainda</td></tr>';
   }catch(err){ document.getElementById('ev').innerHTML = '<tr><td colspan=3>Não conectou na API. Confira URL/chave e se o bot tá online.</td></tr>'; }
+}
+async function act(action){
+  const { api, key } = cfg();
+  const body = { action, channelId: document.getElementById('ch').value };
+  if(action === 'limpar') body.qtd = document.getElementById('qtd').value;
+  if(action === 'prioridade') body.nivel = document.getElementById('pri').value;
+  if(action === 'transcript'){
+    const r = await fetch(api + '/api/action?key=' + encodeURIComponent(key), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if(!r.ok){ say('Falha ao gerar transcript.', false); return; }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'transcript.txt'; a.click();
+    say('Transcript baixado!'); load(); return;
+  }
+  try{
+    const r = await (await fetch(api + '/api/action?key=' + encodeURIComponent(key), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
+    say(r.ok ? 'Ação executada!' : ('Erro: ' + (r.error || 'falha')), !!r.ok);
+  }catch(e){ say('Erro de conexão.', false); }
+  setTimeout(load, 1500);
+}
+async function anunciar(){
+  const { api, key } = cfg();
+  const body = { action:'anunciar', canalId: document.getElementById('acan').value.trim(), titulo: document.getElementById('atit').value, mensagem: document.getElementById('amsg').value };
+  try{
+    const r = await (await fetch(api + '/api/action?key=' + encodeURIComponent(key), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
+    say(r.ok ? 'Anúncio postado!' : ('Erro: ' + (r.error || 'falha')), !!r.ok);
+  }catch(e){ say('Erro de conexão.', false); }
+  setTimeout(load, 1500);
 }
 function card(t,v){ return '<div class="card">' + t + '<b>' + v + '</b></div>'; }
 </script>

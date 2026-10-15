@@ -123,6 +123,96 @@ app.get('/', needKey, (req, res) => res.send(DASH_HTML));
 app.get('/api/stats', needKey, (req, res) => res.json(getStats()));
 app.get('/api/events', needKey, (req, res) => res.json(EVENTS));
 
+// Lista canais de ticket (pro painel escolher onde agir)
+app.get('/api/channels', needKey, (req, res) => {
+  const list = [];
+  for (const [, g] of client.guilds.cache) {
+    for (const [, c] of g.channels.cache) {
+      if (c.type !== ChannelType.GuildText) continue;
+      if (!c.name.startsWith('ticket-') && !c.name.startsWith('fechado-')) continue;
+      const t = parseTicketTopic(c);
+      list.push({ id: c.id, guild: g.name, name: c.name, owner: t.owner, tipo: t.tipo, prioridade: t.prioridade, fechado: c.name.startsWith('fechado-') });
+    }
+  }
+  res.json(list);
+});
+
+// Interação falsa pro painel reutilizar as funções do bot
+function painelInteraction(ch) {
+  const noop = async () => null;
+  return { user: { id: '0', tag: 'Painel Web', send: noop }, deferred: false, replied: false, reply: noop, followUp: noop, editReply: noop, guild: ch.guild, channel: ch };
+}
+
+// AÇÕES do painel (tudo exige ADMIN_KEY pelo needKey)
+app.post('/api/action', express.json(), needKey, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const ch = await client.channels.fetch(b.channelId).catch(() => null);
+    const precisaCanal = ['fechar', 'reabrir', 'deletar', 'limpar', 'prioridade', 'transcript', 'assumir'].includes(b.action);
+    if (precisaCanal && (!ch || !ch.isTextBased())) return res.status(404).json({ error: 'Canal não encontrado.' });
+    const pi = ch ? painelInteraction(ch) : null;
+
+    if (b.action === 'fechar') {
+      const ok = await doCloseTicket(pi, ch, String(b.motivo || ''));
+      return res.json({ ok: !!ok });
+    }
+    if (b.action === 'reabrir') {
+      const ownerId = getTicketOwnerId(ch);
+      if (ownerId) await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch(() => null);
+      await ch.setName(ch.name.replace(/^fechado-/, '').slice(0, 100)).catch(() => null);
+      pushEvent('🔓', `Ticket #${ch.name} reaberto pelo painel`);
+      return res.json({ ok: true });
+    }
+    if (b.action === 'deletar') {
+      pushEvent('🗑️', `Ticket #${ch.name} deletado pelo painel`);
+      await ch.delete().catch(() => null);
+      return res.json({ ok: true });
+    }
+    if (b.action === 'assumir') {
+      await ch.setTopic(`${ch.topic || ''} | Assumido por:Painel Web`.slice(0, 1024)).catch(() => null);
+      pushEvent('🙋', `Ticket #${ch.name} assumido pelo painel`);
+      return res.json({ ok: true });
+    }
+    if (b.action === 'limpar') {
+      const qtd = Math.min(Math.max(parseInt(b.qtd) || 10, 1), 100);
+      const ap = await ch.bulkDelete(qtd, true).catch(() => null);
+      pushEvent('🧹', `${ap ? ap.size : 0} msgs apagadas em #${ch.name} pelo painel`);
+      return res.json({ ok: true, apagadas: ap ? ap.size : 0 });
+    }
+    if (b.action === 'prioridade') {
+      const p = PRIORIDADES[b.nivel];
+      if (!p) return res.status(400).json({ error: 'Nível inválido.' });
+      await ch.setName(`${semSufixoPrioridade(ch.name.replace(/^fechado-/, ''))}-${p.sufixo}`.slice(0, 100)).catch(() => null);
+      const base = (ch.topic || '').replace(/\s*\|\s*Prioridade:[^|]+/g, '');
+      await ch.setTopic(`${base} | Prioridade:${b.nivel}`.slice(0, 1024)).catch(() => null);
+      await ch.send(`⚡ Prioridade definida como **${p.label}** pelo painel`).catch(() => null);
+      pushEvent('⚡', `Prioridade ${p.label} em #${ch.name} pelo painel`);
+      return res.json({ ok: true });
+    }
+    if (b.action === 'transcript') {
+      const txt = await buildTranscript(ch).catch(() => null);
+      if (!txt) return res.status(500).json({ error: 'Falha ao gerar.' });
+      res.set('Content-Disposition', `attachment; filename="transcript-${ch.name}.txt"`);
+      return res.type('text/plain').send(txt);
+    }
+    if (b.action === 'anunciar') {
+      const dest = await client.channels.fetch(b.canalId).catch(() => null);
+      if (!dest || !dest.isTextBased()) return res.status(404).json({ error: 'Canal de destino inválido.' });
+      const cor = /^#[0-9A-Fa-f]{6}$/.test(b.cor || '') ? b.cor : EMBED_COLOR;
+      const emb = new EmbedBuilder().setColor(cor).setTitle(String(b.titulo || 'Anúncio').slice(0, 256))
+        .setDescription(String(b.mensagem || '').replace(/\\n/g, '\n').slice(0, 4000))
+        .setFooter({ text: 'Anúncio pelo painel' }).setTimestamp();
+      await dest.send({ embeds: [emb] }).catch(() => null);
+      pushEvent('📢', `Anúncio em #${dest.name} pelo painel`);
+      return res.json({ ok: true });
+    }
+    return res.status(400).json({ error: 'Ação desconhecida.' });
+  } catch (e) {
+    console.error('Erro na API do painel:', e.message);
+    return res.status(500).json({ error: 'Erro interno.' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌐 Painel + keep-alive na porta ${PORT} (defina ADMIN_KEY pra liberar o painel)`));
 
