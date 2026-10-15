@@ -170,6 +170,7 @@ app.post('/api/action', express.json(), needKey, async (req, res) => {
     }
     if (b.action === 'assumir') {
       await ch.setTopic(`${ch.topic || ''} | Assumido por:Painel Web`.slice(0, 1024)).catch(() => null);
+      await atualizarPainelTicket(ch, { status: '🟢 Em atendimento', atendente: 'Painel Web' });
       pushEvent('🙋', `Ticket #${ch.name} assumido pelo painel`);
       return res.json({ ok: true });
     }
@@ -186,6 +187,7 @@ app.post('/api/action', express.json(), needKey, async (req, res) => {
       const base = (ch.topic || '').replace(/\s*\|\s*Prioridade:[^|]+/g, '');
       await ch.setTopic(`${base} | Prioridade:${b.nivel}`.slice(0, 1024)).catch(() => null);
       await ch.send(`⚡ Prioridade definida como **${p.label}** pelo painel`).catch(() => null);
+      await atualizarPainelTicket(ch, { prioridade: p.label });
       pushEvent('⚡', `Prioridade ${p.label} em #${ch.name} pelo painel`);
       return res.json({ ok: true });
     }
@@ -224,10 +226,10 @@ const client = new Client({
 
 // Tipos de ticket que aparecem no painel
 const TICKET_TYPES = {
-  suporte: { label: '🛠️ Suporte Geral', desc: 'Ajuda, dúvidas e problemas', emoji: '🛠️' },
-  denuncia: { label: '🚨 Denúncia', desc: 'Denunciar jogador ou staff', emoji: '🚨' },
-  parceria: { label: '🤝 Parceria', desc: 'Propostas de parceria/divulgação', emoji: '🤝' },
-  bug: { label: '🐛 Bug / Erro', desc: 'Reportar bug do servidor', emoji: '🐛' },
+  suporte: { label: '🛠️ Suporte Geral', desc: 'Ajuda, dúvidas e problemas', emoji: '🛠️', cor: '#5865F2' },
+  denuncia: { label: '🚨 Denúncia', desc: 'Denunciar jogador ou staff', emoji: '🚨', cor: '#ED4245' },
+  parceria: { label: '🤝 Parceria', desc: 'Propostas de parceria/divulgação', emoji: '🤝', cor: '#57F287' },
+  bug: { label: '🐛 Bug / Erro', desc: 'Reportar bug do servidor', emoji: '🐛', cor: '#FEE75C' },
 };
 
 function isStaff(member) {
@@ -343,11 +345,12 @@ async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   const channelName = `ticket-${user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12)}-${Math.floor(Math.random() * 9000 + 1000)}`;
 
   const motivoCurto = String(motivo || 'Não informado').slice(0, 200).replace(/\n/g, ' ');
+  const protocolo = `TKT-${String(Date.now()).slice(-6)}`;
   const channel = await guild.channels.create({
     name: channelName,
     type: ChannelType.GuildText,
     parent: TICKET_CATEGORY_ID || null,
-    topic: `TICKET:${user.id} | Tipo:${typeKey} | Criado:${new Date().toISOString()} | Motivo:${motivoCurto}`,
+    topic: `TICKET:${user.id} | Tipo:${typeKey} | Criado:${new Date().toISOString()} | Motivo:${motivoCurto} | Proto:${protocolo}`,
     permissionOverwrites: overwrites,
   }).catch((e) => {
     console.error('Erro ao criar canal:', e);
@@ -359,12 +362,22 @@ async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   }
 
   const embed = new EmbedBuilder()
-    .setColor(EMBED_COLOR)
+    .setColor(type.cor || EMBED_COLOR)
     .setTitle(`${type.emoji} ${type.label} — Ticket de ${user.username}`)
     .setDescription(
-      `Olá ${user}, a equipe já foi chamada!\n\n**Tipo:** ${type.label}\n**Motivo:** ${String(motivo || 'Não informado').slice(0, 1000)}\n\nDescreva com mais detalhes se precisar. Aguarde um atendente.`
+      `Olá ${user}, a equipe já foi chamada! Descreva tudo com detalhes e aguarde. 🙏\n\n⚠️ **Não marque a equipe à toa** — isso pode atrasar seu atendimento.`
     )
-    .setFooter({ text: 'Use os botões abaixo para gerenciar' })
+    .setThumbnail(user.displayAvatarURL())
+    .addFields(
+      { name: '📌 Status', value: '🟡 Aguardando atendimento', inline: true },
+      { name: '👨‍💼 Atendente', value: '—', inline: true },
+      { name: '⚡ Prioridade', value: '🟢 Baixa', inline: true },
+      { name: '📂 Tipo', value: type.label, inline: true },
+      { name: '🕒 Aberto em', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+      { name: '🔖 Protocolo', value: `\`${protocolo}\``, inline: true },
+      { name: '📝 Motivo', value: String(motivo || 'Não informado').slice(0, 1000), inline: false },
+    )
+    .setFooter({ text: `Protocolo ${protocolo} • Fechamento apenas pela administração` })
     .setTimestamp();
 
   const row = new ActionRowBuilder().addComponents(
@@ -476,6 +489,7 @@ client.on('interactionCreate', async (interaction) => {
         const base = (ch.topic || '').replace(/\s*\|\s*Prioridade:[^|]+/g, '');
         await ch.setTopic(`${base} | Prioridade:${nivel}`.slice(0, 1024)).catch(() => null);
         await ch.send(`⚡ Prioridade definida como **${p.label}** por ${interaction.user}`).catch(() => null);
+        await atualizarPainelTicket(ch, { prioridade: p.label });
         sendLog(ch.guild, logEmbed('Yellow', '⚡ Prioridade alterada', `**Canal:** ${ch}\n**Nível:** ${p.label}\n**Por:** ${interaction.user}`, interaction.user));
         pushEvent('⚡', `Prioridade ${p.label} em ${ch.name} por ${interaction.user.tag}`);
         return interaction.editReply(`⚡ Prioridade: **${p.label}**`).catch(() => null);
@@ -540,6 +554,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await interaction.deferReply().catch(() => null);
         await interaction.channel.setTopic(`${interaction.channel.topic || ''} | Assumido por:${interaction.user.tag}`).catch(() => null);
+        await atualizarPainelTicket(interaction.channel, { status: '🟢 Em atendimento', atendente: `${interaction.user}` });
         return interaction.editReply(`🙋 Ticket assumido por ${interaction.user}!`).catch(() => null);
       }
 
@@ -693,6 +708,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await interaction.deferUpdate().catch(() => null);
         await ch.setTopic(`${ch.topic || ''} | Assumido por:${interaction.user.tag}`.slice(0, 1024)).catch(() => null);
+        await atualizarPainelTicket(ch, { status: '🟢 Em atendimento', atendente: `${interaction.user}` });
         pushEvent('🙋', `Ticket #${ch.name} assumido por ${interaction.user.tag}`);
         return interaction.followUp(`🙋 ${interaction.user} assumiu o atendimento!`).catch(() => null);
       }
@@ -718,6 +734,27 @@ client.on('interactionCreate', async (interaction) => {
     } catch {}
   }
 });
+
+// Atualiza o embed de abertura do ticket (status/atendente/prioridade ao vivo)
+async function atualizarPainelTicket(ch, { status, atendente, prioridade } = {}) {
+  try {
+    const msgs = await ch.messages.fetch({ limit: 20 }).catch(() => null);
+    if (!msgs) return;
+    const alvo = [...msgs.values()].find((m) =>
+      m.author.id === client.user.id && m.embeds.length && (m.embeds[0].title || '').includes('Ticket de')
+    );
+    if (!alvo) return;
+    const emb = EmbedBuilder.from(alvo.embeds[0]);
+    const fields = (emb.data.fields || []).map((f) => {
+      if (status && f.name === '📌 Status') return { ...f, value: status };
+      if (atendente && f.name === '👨‍💼 Atendente') return { ...f, value: atendente };
+      if (prioridade && f.name === '⚡ Prioridade') return { ...f, value: prioridade };
+      return f;
+    });
+    emb.setFields(fields);
+    await alvo.edit({ embeds: [emb] }).catch(() => null);
+  } catch {}
+}
 
 // Fecha o ticket em 1 passo (botão Fechar e /fechar usam aqui)
 async function doCloseTicket(interaction, ch, motivoFechamento = '') {
@@ -748,6 +785,8 @@ async function doCloseTicket(interaction, ch, motivoFechamento = '') {
     const r = await ch.setName(`fechado-${ch.name}`.slice(0, 100)).catch((e) => e);
     if (r instanceof Error) falhas.push('renomear (bot precisa de Gerenciar Canais)');
   }
+  // 4) Marca o painel de abertura como fechado
+  await atualizarPainelTicket(ch, { status: '🔴 Fechado' });
 
   // Só 2 botões depois de fechado: Reabrir e Deletar
   const row = new ActionRowBuilder().addComponents(
