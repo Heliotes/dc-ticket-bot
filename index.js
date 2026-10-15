@@ -314,6 +314,17 @@ function logEmbed(color, title, desc, user, fields = []) {
   return e;
 }
 
+// Traduz erro de criação de canal pra português claro
+function motivoErroCanal(e) {
+  const code = e && (e.code || e.rawError?.code);
+  const msg = String((e && (e.message || e.rawError?.message)) || '');
+  if (code === 50013 || /missing permissions/i.test(msg)) return 'bot **sem permissão** Gerenciar Canais (dê Administrador ao cargo do bot).';
+  if (code === 10003) return 'categoria/canal do .env **não existe** (rode /setup de novo).';
+  if (code === 50035) return `dados inválidos (${msg.slice(0, 150)}). Rode /setup de novo.`;
+  if (code === 30013) return 'servidor **lotado** (limite de 500 canais). Apague canais.';
+  return msg ? `\`${msg.slice(0, 200)}\`` : 'erro desconhecido. Veja o log.';
+}
+
 // ---------- 4. Criar ticket ----------
 async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   const type = TICKET_TYPES[typeKey] || TICKET_TYPES.suporte;
@@ -357,19 +368,36 @@ async function createTicket(interaction, typeKey, motivo = 'Não informado') {
 
   const motivoCurto = String(motivo || 'Não informado').slice(0, 200).replace(/\n/g, ' ');
   const protocolo = `TKT-${String(Date.now()).slice(-6)}`;
+  // Valida a categoria (auto-cura ID morto de setup antigo/categoria apagada)
+  let parentId = TICKET_CATEGORY_ID;
+  if (parentId) {
+    const catOk = await guild.channels.fetch(parentId).catch(() => null);
+    if (!catOk || catOk.type !== ChannelType.GuildCategory) {
+      console.error(`⚠️ Categoria ${parentId} inválida/inexistente — criando ticket sem categoria. Rode /setup.`);
+      pushEvent('⚠️', `Categoria de tickets inválida — criei sem categoria. Rode /setup.`);
+      parentId = null;
+      if (FILE_CFG.ticketCategoryId && !process.env.TICKET_CATEGORY_ID) {
+        delete FILE_CFG.ticketCategoryId;
+        saveFileCfg();
+        TICKET_CATEGORY_ID = null;
+      }
+    }
+  }
+  let erroCriacao = null;
   const channel = await guild.channels.create({
     name: channelName,
     type: ChannelType.GuildText,
-    parent: TICKET_CATEGORY_ID || null,
+    parent: parentId,
     topic: `TICKET:${user.id} | Tipo:${typeKey} | Criado:${new Date().toISOString()} | Motivo:${motivoCurto} | Proto:${protocolo}`,
     permissionOverwrites: overwrites,
   }).catch((e) => {
+    erroCriacao = e;
     console.error('Erro ao criar canal:', e);
     return null;
   });
 
   if (!channel) {
-    return interaction.editReply('❌ Não consegui criar o canal. Verifique se o bot tem permissão **Gerenciar Canais** e se a categoria/cargo estão certos no .env').catch(() => null);
+    return interaction.editReply(`❌ Não consegui criar o canal: ${motivoErroCanal(erroCriacao)}`).catch(() => null);
   }
 
   const embed = new EmbedBuilder()
@@ -594,9 +622,16 @@ client.on('interactionCreate', async (interaction) => {
 
       if (commandName === 'debug-ticket') {
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
+        if (!interaction.deferred) return;
         const ch = interaction.channel;
         const me = interaction.guild.members.me;
         const perms = ch.permissionsFor(me);
+        let catInfo = 'não definida (use /setup)';
+        if (TICKET_CATEGORY_ID) {
+          const cat = await interaction.guild.channels.fetch(TICKET_CATEGORY_ID).catch(() => null);
+          catInfo = cat ? `✅ #${cat.name}` : `❌ ID morto (apagada?) — rode /setup`;
+        }
         const linhas = [
           `**Canal:** #${ch.name} (\`${ch.id}\`)`,
           `**É ticket?** ${isTicketChannel(ch) ? '✅ SIM' : '❌ NÃO'}`,
@@ -606,10 +641,10 @@ client.on('interactionCreate', async (interaction) => {
           `**Bot vê o canal?** ${perms && perms.has(PermissionFlagsBits.ViewChannel) ? '✅' : '❌'}`,
           `**Bot fala?** ${perms && perms.has(PermissionFlagsBits.SendMessages) ? '✅' : '❌'}`,
           `**Bot gerencia?** ${perms && perms.has(PermissionFlagsBits.ManageChannels) ? '✅' : '❌'}`,
-          `**Categoria tickets:** ${TICKET_CATEGORY_ID ? `\`${TICKET_CATEGORY_ID}\`` : 'não definida (use /setup)'}`,
+          `**Categoria tickets:** ${catInfo}`,
           `**Canal avaliações:** ${AVAL_CHANNEL_ID ? `\`${AVAL_CHANNEL_ID}\`` : 'não definido (use /setup)'}`,
         ];
-        return interaction.reply({ content: `🔍 **Diagnóstico**\n${linhas.join('\n')}`, ephemeral: true });
+        return interaction.editReply(`🔍 **Diagnóstico**\n${linhas.join('\n')}`).catch(() => null);
       }
 
       if (commandName === 'adicionar') {
