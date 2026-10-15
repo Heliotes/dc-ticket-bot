@@ -824,6 +824,8 @@ client.on('interactionCreate', async (interaction) => {
         if (!isTicketChannel(ch)) return interaction.reply({ content: '❌ Não é um ticket.', ephemeral: true });
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         try { await interaction.deferUpdate(); } catch {}
+        // Feedback imediato pra não parecer travado
+        try { await interaction.followUp({ content: '🔒 Fechando ticket...', ephemeral: true }); } catch {}
         try {
           await doCloseTicket(interaction, ch);
         } catch (e) {
@@ -906,6 +908,14 @@ async function atualizarPainelTicket(ch, { status, atendente, prioridade } = {})
 }
 
 // Fecha o ticket em 1 passo (botão Fechar e /fechar usam aqui)
+// Executa com timeout: nunca trava pra sempre esperando a API do Discord
+function comTimeout(promise, ms, nome) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout em ${nome}`)), ms)),
+  ]);
+}
+
 async function doCloseTicket(interaction, ch, motivoFechamento = '') {
   console.log(`🔒 Fechando #${ch.name} (pedido por ${interaction.user.tag})...`);
   if (ch.name.startsWith('fechado-')) {
@@ -918,35 +928,34 @@ async function doCloseTicket(interaction, ch, motivoFechamento = '') {
   }
   const ownerId = getTicketOwnerId(ch);
   const closerId = interaction.user.id;
-  // Gera o transcript ANTES de trancar (garante histórico completo)
-  const transcriptTxt = await buildTranscript(ch).catch(() => null);
-  const transcriptFile = () =>
-    transcriptTxt ? new AttachmentBuilder(Buffer.from(transcriptTxt, 'utf-8'), { name: `transcript-${ch.name}.txt` }) : null;
   const falhas = [];
-  // 1) Tira permissão de falar do dono, mantém vendo
+  // FASE RÁPIDA (visível na hora): tranca, renomeia, posta. Tudo com timeout.
   if (ownerId) {
-    const r = await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, ReadMessageHistory: true, SendMessages: false }).catch((e) => e);
+    const r = await comTimeout(
+      ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, ReadMessageHistory: true, SendMessages: false }),
+      15000, 'travar dono'
+    ).catch((e) => e);
     if (r instanceof Error) falhas.push('permissão do dono');
   }
-  // 2) Salva quem fechou no tópico
-  await ch.setTopic(`${ch.topic || ''} | FechadoPor:${closerId}`.slice(0, 1024)).catch(() => falhas.push('tópico'));
-  // 3) Renomeia pra fechado-*
+  await comTimeout(
+    ch.setTopic(`${ch.topic || ''} | FechadoPor:${closerId}`.slice(0, 1024)),
+    15000, 'tópico'
+  ).catch(() => falhas.push('tópico'));
   if (!ch.name.startsWith('fechado-')) {
-    const r = await ch.setName(`fechado-${ch.name}`.slice(0, 100)).catch((e) => e);
+    const r = await comTimeout(ch.setName(`fechado-${ch.name}`.slice(0, 100)), 15000, 'renomear').catch((e) => e);
     if (r instanceof Error) falhas.push('renomear (bot precisa de Gerenciar Canais)');
   }
-  // 4) Marca o painel de abertura como fechado
   await atualizarPainelTicket(ch, { status: '🔴 Fechado' });
 
-  // Só 2 botões depois de fechado: Reabrir e Deletar
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('reopen_ticket').setLabel('Reabrir').setStyle(ButtonStyle.Success).setEmoji('🔓'),
     new ButtonBuilder().setCustomId('delete_ticket').setLabel('Deletar').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
   );
   const embed = new EmbedBuilder().setColor('Red').setTitle('🔒 Ticket fechado')
     .setDescription(`Fechado por ${interaction.user}${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}\n\n🔓 Reabrir ou 🗑️ Deletar abaixo.\n\n**Dono do ticket:** avalie o atendimento no menu abaixo! 👇`).setTimestamp();
-  const tFile = transcriptFile();
-  const postado = await ch.send({ embeds: [embed], components: [row], ...(tFile ? { files: [tFile] } : {}) }).catch((e) => e);
+  const postado = await comTimeout(
+    ch.send({ embeds: [embed], components: [row] }), 15000, 'postar fechamento'
+  ).catch((e) => e);
   if (postado instanceof Error) {
     try { await interaction.user.send(`⚠️ Fechei o ticket **#${ch.name}** mas não consegui postar nele (sem permissão de Enviar Mensagens).`).catch(() => null); } catch {}
     sendLog(ch.guild, logEmbed('Red', '⚠️ Ticket fechado com falhas', `**Canal:** #${ch.name}\n**Falhas:** postar msg + ${falhas.join(', ')}`, interaction.user));
@@ -954,38 +963,53 @@ async function doCloseTicket(interaction, ch, motivoFechamento = '') {
     return false;
   }
   if (falhas.length) await ch.send(`⚠️ Avisos (não críticos): ${falhas.join(', ')}.`).catch(() => null);
-  const rateMenu = new StringSelectMenuBuilder()
-    .setCustomId('rate_ticket')
-    .setPlaceholder('⭐ Avalie o atendimento (1-5)...')
-    .addOptions([1, 2, 3, 4, 5].map((n) => ({ label: `${'⭐'.repeat(n)} (${n}/5)`, value: `${n}`, emoji: '⭐' })));
-  await ch.send({ content: 'Sua opinião ajuda a melhorar! (só o dono precisa votar)', components: [new ActionRowBuilder().addComponents(rateMenu)] }).catch(() => null);
-  // DM pro dono pedindo avaliação (se a DM tiver fechada, ignora)
-  if (ownerId) {
-    try {
-      const owner = await client.users.fetch(ownerId).catch(() => null);
-      if (owner) {
-        const dmEmbed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('🔒 Seu ticket foi fechado')
-          .setDescription(`O ticket **#${ch.name}** foi fechado por ${interaction.user}.${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}\n\nVolte ao canal ${ch} e vote de **1 a 5 ⭐** no menu de avaliação!`)
-          .setTimestamp();
-        const dmFile = transcriptFile();
-        await owner.send({ embeds: [dmEmbed], ...(dmFile ? { files: [dmFile] } : {}) }).catch(() => null);
-      }
-    } catch {}
-  }
-  // Transcript também no canal de logs
-  if (transcriptTxt && LOG_CHANNEL_ID) {
-    try {
-      const logCh = await ch.guild.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
-      if (logCh && logCh.isTextBased()) {
-        const lf = new AttachmentBuilder(Buffer.from(transcriptTxt, 'utf-8'), { name: `transcript-${ch.name}.txt` });
-        await logCh.send({ content: `📝 Transcript de **#${ch.name}** (fechado por ${interaction.user})`, files: [lf] }).catch(() => null);
-      }
-    } catch {}
-  }
+  console.log(`✅ #${ch.name} fechado (fase rápida). Transcript/avaliação em seguida...`);
+  // FASE LENTA em background: não segura a resposta (transcript, avaliação, DM, logs)
+  finalizarFechamento(interaction, ch, { ownerId, motivoFechamento, falhas });
   sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}`, interaction.user));
   pushEvent('🔒', `Ticket #${ch.name} fechado por ${interaction.user.tag}${motivoFechamento ? ` (${motivoFechamento.slice(0, 80)})` : ''}`);
-  console.log(`✅ #${ch.name} fechado.`);
   return true;
+}
+
+// Transcript + avaliação + DMs (roda solto após o fechamento visível)
+async function finalizarFechamento(interaction, ch, { ownerId, motivoFechamento, falhas }) {
+  try {
+    const transcriptTxt = await comTimeout(buildTranscript(ch), 60000, 'transcript').catch(() => null);
+    const mkFile = () => transcriptTxt
+      ? new AttachmentBuilder(Buffer.from(transcriptTxt, 'utf-8'), { name: `transcript-${ch.name}.txt` })
+      : null;
+    const f1 = mkFile();
+    if (f1) await ch.send({ content: '📝 **Transcript automático:**', files: [f1] }).catch(() => null);
+    const rateMenu = new StringSelectMenuBuilder()
+      .setCustomId('rate_ticket')
+      .setPlaceholder('⭐ Avalie o atendimento (1-5)...')
+      .addOptions([1, 2, 3, 4, 5].map((n) => ({ label: `${'⭐'.repeat(n)} (${n}/5)`, value: `${n}`, emoji: '⭐' })));
+    await ch.send({ content: 'Sua opinião ajuda a melhorar! (só o dono precisa votar)', components: [new ActionRowBuilder().addComponents(rateMenu)] }).catch(() => null);
+    if (ownerId) {
+      try {
+        const owner = await comTimeout(client.users.fetch(ownerId), 15000, 'buscar dono').catch(() => null);
+        if (owner) {
+          const dmEmbed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('🔒 Seu ticket foi fechado')
+            .setDescription(`O ticket **#${ch.name}** foi fechado por ${interaction.user}.${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}\n\nVolte ao canal ${ch} e vote de **1 a 5 ⭐** no menu de avaliação!`)
+            .setTimestamp();
+          const dmFile = mkFile();
+          await owner.send({ embeds: [dmEmbed], ...(dmFile ? { files: [dmFile] } : {}) }).catch(() => null);
+        }
+      } catch {}
+    }
+    if (transcriptTxt && LOG_CHANNEL_ID) {
+      try {
+        const logCh = await ch.guild.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+        if (logCh && logCh.isTextBased()) {
+          const lf = new AttachmentBuilder(Buffer.from(transcriptTxt, 'utf-8'), { name: `transcript-${ch.name}.txt` });
+          await logCh.send({ content: `📝 Transcript de **#${ch.name}** (fechado por ${interaction.user})`, files: [lf] }).catch(() => null);
+        }
+      } catch {}
+    }
+    console.log(`✅ Finalização de #${ch.name} concluída.`);
+  } catch (e) {
+    console.error(`⚠️ Falha na finalização de #${ch.name} (ticket já está fechado):`, e.message);
+  }
 }
 
 // Neagação VISÍVEL quando não é admin (efêmera + aviso público que se apaga)
