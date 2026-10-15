@@ -263,7 +263,8 @@ client.on('interactionCreate', async (interaction) => {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
         const target = interaction.options.getUser('usuario');
-        await interaction.channel.permissionOverwrites.edit(target.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true });
+        const r = await interaction.channel.permissionOverwrites.edit(target.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch((e) => e);
+        if (r instanceof Error) return interaction.reply({ content: '❌ Não consegui adicionar. O cargo do bot precisa estar **acima** dos cargos do servidor.', ephemeral: true });
         return interaction.reply(`✅ ${target} adicionado ao ticket.`);
       }
 
@@ -280,8 +281,9 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'renomear') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
-        const nome = interaction.options.getString('nome', true).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 90);
-        await interaction.channel.setName(nome);
+        const nome = interaction.options.getString('nome', true).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 90);
+        if (!nome) return interaction.reply({ content: '❌ Nome inválido. Use letras e números (ex: `suporte-urgente`).', ephemeral: true });
+        await interaction.channel.setName(nome).catch(() => null);
         return interaction.reply(`✅ Canal renomeado para \`${nome}\``);
       }
 
@@ -330,13 +332,15 @@ client.on('interactionCreate', async (interaction) => {
         const canal = interaction.options.getChannel('canal', true);
         const titulo = interaction.options.getString('titulo', true);
         const mensagem = interaction.options.getString('mensagem', true).replace(/\\n/g, '\n');
-        const cor = interaction.options.getString('cor') || EMBED_COLOR;
+        const corRaw = (interaction.options.getString('cor') || '').trim();
+        const corInvalida = corRaw && !/^#[0-9A-Fa-f]{6}$/.test(corRaw);
+        const cor = corInvalida ? EMBED_COLOR : (corRaw || EMBED_COLOR);
         if (!canal.isTextBased()) return interaction.reply({ content: '❌ Escolha um canal de texto.', ephemeral: true });
         const embed = new EmbedBuilder().setColor(cor).setTitle(titulo.slice(0, 256)).setDescription(mensagem.slice(0, 4000))
           .setFooter({ text: `Anúncio por ${interaction.user.tag}` }).setTimestamp();
         await canal.send({ embeds: [embed] }).catch(() => null);
         sendLog(interaction.guild, logEmbed('Blue', '📢 Anúncio enviado', `**Canal:** ${canal}\n**Título:** ${titulo.slice(0, 100)}`, interaction.user));
-        return interaction.reply({ content: `✅ Anúncio postado em ${canal}!`, ephemeral: true });
+        return interaction.reply({ content: `✅ Anúncio postado em ${canal}!${corInvalida ? ' (⚠️ cor inválida, usei a padrão — formato `#FF0000`)' : ''}`, ephemeral: true });
       }
       return;
     }
@@ -448,6 +452,14 @@ client.on('interactionCreate', async (interaction) => {
 
 // Fecha o ticket em 1 passo (botão Fechar e /fechar usam aqui)
 async function doCloseTicket(interaction, ch) {
+  if (ch.name.startsWith('fechado-')) {
+    try {
+      const msg = '🔒 Esse ticket já está fechado. Use 🔓 Reabrir ou 🗑️ Deletar.';
+      if (interaction.deferred) await interaction.followUp({ content: msg, ephemeral: true }).catch(() => null);
+      else if (!interaction.replied) await interaction.reply({ content: msg, ephemeral: true }).catch(() => null);
+    } catch {}
+    return true;
+  }
   const ownerId = getTicketOwnerId(ch);
   const closerId = interaction.user.id;
   const falhas = [];
