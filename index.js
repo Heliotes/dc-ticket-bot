@@ -244,10 +244,10 @@ client.on('interactionCreate', async (interaction) => {
 
       if (commandName === 'fechar') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um canal de ticket.', ephemeral: true });
-        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await interaction.deferReply({ ephemeral: true }).catch(() => null);
-        await doCloseTicket(interaction, interaction.channel);
-        return interaction.editReply('🔒 Ticket fechado!').catch(() => null);
+        const ok = await doCloseTicket(interaction, interaction.channel);
+        return interaction.editReply(ok ? '🔒 Ticket fechado!' : '⚠️ Fechei com falhas, veja o canal.').catch(() => null);
       }
 
       if (commandName === 'adicionar') {
@@ -278,7 +278,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (commandName === 'assumir') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
-        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await interaction.channel.setTopic(`${interaction.channel.topic || ''} | Assumido por:${interaction.user.tag}`);
         return interaction.reply(`🙋 Ticket assumido por ${interaction.user}!`);
       }
@@ -310,6 +310,8 @@ client.on('interactionCreate', async (interaction) => {
             { name: '🔒 Fechados', value: `${fechados}`, inline: true },
             { name: '⏱️ Online há', value: `${h}h ${m}m ${s}s`, inline: true },
             { name: '📶 Ping', value: `${client.ws.ping}ms`, inline: true },
+            { name: '👑 Você é ADMIN?', value: isAdmin(interaction.member) ? '✅ SIM' : '❌ NÃO (fechar/assumir bloqueados)', inline: true },
+            { name: '🛡️ Você é equipe?', value: isStaff(interaction.member) ? '✅ SIM' : '❌ NÃO', inline: true },
           ).setTimestamp();
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
@@ -386,13 +388,13 @@ client.on('interactionCreate', async (interaction) => {
       // Fechar em 1 clique (sem confirmação — Reabrir desfaz)
       if (id === 'close_ticket') {
         if (!isTicketChannel(ch)) return interaction.reply({ content: '❌ Não é um ticket.', ephemeral: true });
-        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         try { await interaction.deferUpdate(); } catch {}
         await doCloseTicket(interaction, ch);
         return;
       }
       if (id === 'reopen_ticket') {
-        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         const ownerId = getTicketOwnerId(ch);
         if (ownerId) await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch(() => null);
         await ch.setName(ch.name.replace(/^fechado-/, '').slice(0, 100)).catch(() => null);
@@ -400,7 +402,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (id === 'delete_ticket') {
-        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await interaction.reply('🗑️ Deletando em 5 segundos...');
         sendLog(ch.guild, logEmbed('DarkRed', '🗑️ Ticket deletado', `**Canal:** #${ch.name}\n**Deletado por:** ${interaction.user}`, interaction.user));
         setTimeout(() => ch.delete().catch(() => null), 5000);
@@ -409,7 +411,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (id === 'claim_ticket') {
         if (!isTicketChannel(ch)) return interaction.reply({ content: '❌ Não é um ticket.', ephemeral: true });
-        if (!isAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY_MSG, ephemeral: true });
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await ch.setTopic(`${ch.topic || ''} | Assumido por:${interaction.user.tag}`).catch(() => null);
         return interaction.reply(`🙋 ${interaction.user} assumiu o atendimento!`);
       }
@@ -486,6 +488,19 @@ async function doCloseTicket(interaction, ch) {
     } catch {}
   }
   sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}`, interaction.user));
+  return true;
+}
+
+// Neagação VISÍVEL quando não é admin (efêmera + aviso público que se apaga)
+async function denyAdmin(interaction) {
+  try { await interaction.reply({ content: `${ADMIN_ONLY_MSG}\n💡 Dica: use /stats pra ver se sua conta tem ADMIN de verdade.`, ephemeral: true }); } catch {}
+  try {
+    const ch = interaction.channel;
+    if (ch && ch.isTextBased && ch.isTextBased()) {
+      const w = await ch.send(`⚠️ ${interaction.user}, isso é **só pra ADMIN** (permissão Administrador).`).catch(() => null);
+      if (w) setTimeout(() => w.delete().catch(() => null), 10000);
+    }
+  } catch {}
 }
 
 client.once('ready', () => {
