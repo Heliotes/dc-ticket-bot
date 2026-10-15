@@ -44,6 +44,8 @@ const commands = [
         { name: '🟠 Alta', value: 'alta' },
         { name: '🔴 Urgente', value: 'urgente' },
       )).toJSON(),
+  new SlashCommandBuilder().setName('setup').setDescription('[ADMIN] Cria categoria, painel e avaliações estilizados').toJSON(),
+  new SlashCommandBuilder().setName('debug-ticket').setDescription('[EQUIPE] Diagnostica o canal/ticket atual').toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);

@@ -25,10 +25,21 @@ const {
 } = require('discord.js');
 
 // ---------- 1. Validação segura das variáveis ----------
+const fs = require('fs');
 const TOKEN = process.env.TOKEN;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
-const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null;
+
+// Config salva pelo /setup (config.json). Variável de ambiente sempre vence.
+let FILE_CFG = {};
+try {
+  if (fs.existsSync('./config.json')) FILE_CFG = JSON.parse(fs.readFileSync('./config.json', 'utf8'));
+} catch { FILE_CFG = {}; }
+function saveFileCfg() {
+  try { fs.writeFileSync('./config.json', JSON.stringify(FILE_CFG, null, 2)); } catch (e) { console.error('⚠️ Não salvei config.json:', e.message); }
+}
+let TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || FILE_CFG.ticketCategoryId || null;
+let AVAL_CHANNEL_ID = process.env.AVAL_CHANNEL_ID || FILE_CFG.avalChannelId || null;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || FILE_CFG.logChannelId || null;
 const EMBED_COLOR = process.env.EMBED_COLOR || '#5865F2';
 const AUTO_ROLE_ID = process.env.AUTO_ROLE_ID || null;
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || null;
@@ -430,6 +441,42 @@ async function buildTranscript(channel) {
 
 client.on('error', (e) => console.error('⚠️ Client error (bot continua):', e && e.message ? e.message : e));
 
+// Monta o painel de abertura (usado no /painel-ticket e no /setup)
+function buildPanel(guild) {
+  const abertos = guild ? guild.channels.cache.filter((c) => c.name && c.name.startsWith('ticket-')).size : 0;
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle('🎫 Central de Atendimento')
+    .setDescription(
+      'Precisa de ajuda? **Abra um ticket** e fale com a equipe!\n\n' +
+      '🛠️ **Suporte Geral** — ajuda, dúvidas e problemas\n' +
+      '🚨 **Denúncia** — denunciar jogador ou membro da staff (sigilo total)\n' +
+      '🤝 **Parceria** — propostas de parceria e divulgação\n' +
+      '🐛 **Bug / Erro** — reportar erro do servidor\n\n' +
+      '👇 **Como funciona:**\n' +
+      '1️⃣ Selecione o tipo abaixo\n' +
+      '2️⃣ Descreva o **motivo** (obrigatório)\n' +
+      '3️⃣ Aguarde — um ADMIN vai te atender\n\n' +
+      `📊 **Tickets abertos agora:** ${abertos}\n` +
+      '⚠️ Não abra ticket à toa — abuso pode gerar punição.'
+    )
+    .setThumbnail(guild && guild.iconURL ? guild.iconURL() : null)
+    .setFooter({ text: 'Atendimento apenas pela administração • Resposta rápida' })
+    .setTimestamp();
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('select_ticket_type')
+    .setPlaceholder('👇 Selecione o tipo de ticket...')
+    .addOptions(
+      Object.entries(TICKET_TYPES).map(([value, t]) => ({
+        label: t.label.slice(0, 100),
+        description: t.desc.slice(0, 100),
+        value,
+        emoji: t.emoji,
+      }))
+    );
+  return { embed, row: new ActionRowBuilder().addComponents(menu) };
+}
+
 // ---------- 6. Interações ----------
 client.on('interactionCreate', async (interaction) => {
   try {
@@ -443,27 +490,9 @@ client.on('interactionCreate', async (interaction) => {
         }
         // Defer primeiro: garante resposta mesmo com lag (evita Unknown interaction)
         await interaction.deferReply().catch(() => null);
-        const embed = new EmbedBuilder()
-          .setColor(EMBED_COLOR)
-          .setTitle('🎫 Central de Atendimento')
-          .setDescription(
-            'Precisa de ajuda? Abra um ticket!\n\n🛠️ **Suporte Geral** — ajuda e dúvidas\n🚨 **Denúncia** — denunciar alguém\n🤝 **Parceria** — propostas\n🐛 **Bug / Erro** — reportar problema\n\n👇 Selecione o tipo abaixo:'
-          )
-          .setFooter({ text: 'Não abuse. Abrir ticket à toa pode gerar punição.' });
-
-        const menu = new StringSelectMenuBuilder()
-          .setCustomId('select_ticket_type')
-          .setPlaceholder('Selecione o tipo de ticket...')
-          .addOptions(
-            Object.entries(TICKET_TYPES).map(([value, t]) => ({
-              label: t.label.slice(0, 100),
-              description: t.desc.slice(0, 100),
-              value,
-              emoji: t.emoji,
-            }))
-          );
-
-        return interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] }).catch(() => null);
+        if (!interaction.deferred) return;
+        const { embed, row } = buildPanel(interaction.guild);
+        return interaction.editReply({ embeds: [embed], components: [row] }).catch(() => null);
       }
 
       if (commandName === 'fechar') {
@@ -518,6 +547,71 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
 
+      if (commandName === 'setup') {
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
+        if (!interaction.deferred) return;
+        const guild = interaction.guild;
+        const CAT_FANCY = '『📋』・ғᴏʀᴍᴜʟáʀɪᴏ';
+        const PANEL_FANCY = '『🎫』・ᴀʙʀɪʀ-ᴛɪᴄᴋᴇᴛ';
+        const AVAL_FANCY = '『⭐』・ᴀᴠᴀʟɪᴀçõᴇs';
+        const rel = [];
+        // 1) Categoria (tenta estilizada, senão simples)
+        let cat = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && (c.name === CAT_FANCY || c.name === 'formulario'));
+        if (!cat) {
+          cat = await guild.channels.create({ name: CAT_FANCY, type: ChannelType.GuildCategory }).catch(() => null)
+            || await guild.channels.create({ name: 'formulario', type: ChannelType.GuildCategory }).catch(() => null);
+        }
+        if (!cat) return interaction.editReply('❌ Não consegui criar a categoria. O bot precisa de **Gerenciar Canais**.').catch(() => null);
+        rel.push(`📁 Categoria: ${cat.name}`);
+        // 2) Canal do painel + posta painel
+        let panel = guild.channels.cache.find((c) => c.parentId === cat.id && (c.name === PANEL_FANCY || c.name === 'abrir-ticket'));
+        if (!panel) {
+          panel = await guild.channels.create({ name: PANEL_FANCY, type: ChannelType.GuildText, parent: cat.id }).catch(() => null)
+            || await guild.channels.create({ name: 'abrir-ticket', type: ChannelType.GuildText, parent: cat.id }).catch(() => null);
+        }
+        if (panel) {
+          const { embed: pEmbed, row: pRow } = buildPanel(guild);
+          await panel.send({ embeds: [pEmbed], components: [pRow] }).catch(() => null);
+          rel.push(`🎫 Painel postado em ${panel}`);
+        }
+        // 3) Canal de avaliações
+        let aval = guild.channels.cache.find((c) => c.parentId === cat.id && (c.name === AVAL_FANCY || c.name === 'avaliacoes'));
+        if (!aval) {
+          aval = await guild.channels.create({ name: AVAL_FANCY, type: ChannelType.GuildText, parent: cat.id, topic: '⭐ Avaliações dos atendimentos aparecem aqui' }).catch(() => null)
+            || await guild.channels.create({ name: 'avaliacoes', type: ChannelType.GuildText, parent: cat.id }).catch(() => null);
+        }
+        if (aval) rel.push(`⭐ Avaliações em ${aval}`);
+        // 4) Salva pra usar nos tickets (tickets nascem dentro da categoria)
+        FILE_CFG.ticketCategoryId = cat.id;
+        FILE_CFG.avalChannelId = aval ? aval.id : FILE_CFG.avalChannelId;
+        saveFileCfg();
+        if (!process.env.TICKET_CATEGORY_ID) TICKET_CATEGORY_ID = cat.id;
+        if (aval && !process.env.AVAL_CHANNEL_ID) AVAL_CHANNEL_ID = aval.id;
+        pushEvent('⚙️', `Setup executado por ${interaction.user.tag}`);
+        return interaction.editReply(`✅ **Setup pronto!**\n${rel.join('\n')}\n\n📌 Tickets novos nascem dentro da categoria.\n💡 No Render, prefira fixar via env: \`TICKET_CATEGORY_ID=${cat.id}\`${aval ? ` e \`AVAL_CHANNEL_ID=${aval.id}\`` : ''}`).catch(() => null);
+      }
+
+      if (commandName === 'debug-ticket') {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
+        const ch = interaction.channel;
+        const me = interaction.guild.members.me;
+        const perms = ch.permissionsFor(me);
+        const linhas = [
+          `**Canal:** #${ch.name} (\`${ch.id}\`)`,
+          `**É ticket?** ${isTicketChannel(ch) ? '✅ SIM' : '❌ NÃO'}`,
+          `**Dono:** ${getTicketOwnerId(ch) ? `<@${getTicketOwnerId(ch)}>` : 'não identificado'}`,
+          `**Você é ADMIN?** ${isAdmin(interaction.member) ? '✅ SIM' : '❌ NÃO'}`,
+          `**Você é equipe?** ${isStaff(interaction.member) ? '✅ SIM' : '❌ NÃO'}`,
+          `**Bot vê o canal?** ${perms && perms.has(PermissionFlagsBits.ViewChannel) ? '✅' : '❌'}`,
+          `**Bot fala?** ${perms && perms.has(PermissionFlagsBits.SendMessages) ? '✅' : '❌'}`,
+          `**Bot gerencia?** ${perms && perms.has(PermissionFlagsBits.ManageChannels) ? '✅' : '❌'}`,
+          `**Categoria tickets:** ${TICKET_CATEGORY_ID ? `\`${TICKET_CATEGORY_ID}\`` : 'não definida (use /setup)'}`,
+          `**Canal avaliações:** ${AVAL_CHANNEL_ID ? `\`${AVAL_CHANNEL_ID}\`` : 'não definido (use /setup)'}`,
+        ];
+        return interaction.reply({ content: `🔍 **Diagnóstico**\n${linhas.join('\n')}`, ephemeral: true });
+      }
+
       if (commandName === 'adicionar') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
@@ -570,7 +664,7 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'ajuda') {
         const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('❓ Ajuda — Bot de Tickets')
           .setDescription(
-            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot (+ vê se você é ADMIN)\n`/anunciar` — posta anúncio bonito\n`/limpar qtd` — apaga até 100 msgs do canal\n`/tickets` — lista tickets abertos\n\n**Só ADMIN (1 clique):**\n`/fechar [motivo]` + `/prioridade` + botões 🙋 Assumir / 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐ (chega na sua DM), auto-close inativo, anti-link/palavrão'
+            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot (+ vê se você é ADMIN)\n`/anunciar` — posta anúncio bonito\n`/limpar qtd` — apaga até 100 msgs do canal\n`/tickets` — lista tickets abertos\n`/setup` — cria categoria + canais estilizados (ADMIN, uma vez)\n`/debug-ticket` — diagnostica o canal atual\n\n**Só ADMIN (1 clique):**\n`/fechar [motivo]` + `/prioridade` + botões 🙋 Assumir / 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐ (chega na sua DM), auto-close inativo, anti-link/palavrão'
           );
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
@@ -658,6 +752,19 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ content: `Obrigado! Avaliação registrada: ${stars} (${nota}/5)`, ephemeral: true });
       sendLog(interaction.guild, logEmbed('Gold', '⭐ Avaliação recebida', `**Canal:** #${interaction.channel.name}\n**Nota:** ${stars} (${nota}/5)`, interaction.user));
       pushEvent('⭐', `Avaliação ${nota}/5 em #${interaction.channel.name} por ${interaction.user.tag}`);
+      // Feed público no canal de avaliações (do /setup)
+      if (AVAL_CHANNEL_ID) {
+        try {
+          const avalCh = await interaction.guild.channels.fetch(AVAL_CHANNEL_ID).catch(() => null);
+          if (avalCh && avalCh.isTextBased()) {
+            const avEmbed = new EmbedBuilder().setColor(nota >= 4 ? 'Green' : nota == 3 ? 'Yellow' : 'Red')
+              .setTitle(`⭐ Avaliação ${nota}/5`)
+              .setDescription(`${stars}\n\n**Ticket:** #${interaction.channel.name}\n**Avaliado por:** ${interaction.user}`)
+              .setThumbnail(interaction.user.displayAvatarURL()).setTimestamp();
+            await avalCh.send({ embeds: [avEmbed] }).catch(() => null);
+          }
+        } catch {}
+      }
       // DM pro admin que fechou com o resultado
       try {
         const m = (interaction.channel.topic || '').match(/FechadoPor:(\d+)/);
@@ -681,7 +788,13 @@ client.on('interactionCreate', async (interaction) => {
         if (!isTicketChannel(ch)) return interaction.reply({ content: '❌ Não é um ticket.', ephemeral: true });
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         try { await interaction.deferUpdate(); } catch {}
-        await doCloseTicket(interaction, ch);
+        try {
+          await doCloseTicket(interaction, ch);
+        } catch (e) {
+          console.error(`❌ Fechar falhou no #${ch.name} por ${interaction.user.tag}:`, e.message);
+          try { await interaction.user.send(`❌ Não consegui fechar **#${ch.name}**: ${String(e.message || e).slice(0, 300)}\nRode \`/debug-ticket\` no canal e me mande o resultado.`).catch(() => null); } catch {}
+          try { await interaction.followUp({ content: `❌ Falha ao fechar: ${String(e.message || e).slice(0, 200)}`, ephemeral: true }); } catch {}
+        }
         return;
       }
       if (id === 'reopen_ticket') {
@@ -758,6 +871,7 @@ async function atualizarPainelTicket(ch, { status, atendente, prioridade } = {})
 
 // Fecha o ticket em 1 passo (botão Fechar e /fechar usam aqui)
 async function doCloseTicket(interaction, ch, motivoFechamento = '') {
+  console.log(`🔒 Fechando #${ch.name} (pedido por ${interaction.user.tag})...`);
   if (ch.name.startsWith('fechado-')) {
     try {
       const msg = '🔒 Esse ticket já está fechado. Use 🔓 Reabrir ou 🗑️ Deletar.';
@@ -834,6 +948,7 @@ async function doCloseTicket(interaction, ch, motivoFechamento = '') {
   }
   sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}`, interaction.user));
   pushEvent('🔒', `Ticket #${ch.name} fechado por ${interaction.user.tag}${motivoFechamento ? ` (${motivoFechamento.slice(0, 80)})` : ''}`);
+  console.log(`✅ #${ch.name} fechado.`);
   return true;
 }
 
