@@ -205,7 +205,14 @@ async function buildTranscript(channel) {
   const lines = messages.map((m) => {
     const date = new Date(m.createdTimestamp).toLocaleString('pt-BR');
     const author = `${m.author.tag} (${m.author.id})`;
-    let text = m.content || '[embed/anexo]';
+    let text = m.content || '';
+    // Inclui texto dos embeds (painéis, avisos) no histórico
+    for (const e of m.embeds) {
+      const parts = [e.title, e.description].filter(Boolean);
+      for (const f of (e.fields || [])) parts.push(`${f.name}: ${f.value}`);
+      if (parts.length) text += `\n[EMBED] ${parts.join(' | ').slice(0, 1000)}`;
+    }
+    if (!text.trim()) text = '[sem texto]';
     if (m.attachments.size > 0) text += ` [anexos: ${[...m.attachments.values()].map((a) => a.url).join(', ')}]`;
     return `[${date}] ${author}: ${text}`;
   });
@@ -305,7 +312,7 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'ajuda') {
         const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('❓ Ajuda — Bot de Tickets')
           .setDescription(
-            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot\n`/anunciar` — posta anúncio bonito\n\n**Só ADMIN (1 clique):**\n`/fechar` + botões 🙋 Assumir / 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐ (chega na sua DM), auto-close inativo, anti-link/palavrão'
+            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot (+ vê se você é ADMIN)\n`/anunciar` — posta anúncio bonito\n`/limpar qtd` — apaga até 100 msgs do canal\n\n**Só ADMIN (1 clique):**\n`/fechar` + botões 🙋 Assumir / 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐ (chega na sua DM), auto-close inativo, anti-link/palavrão'
           );
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
@@ -341,6 +348,16 @@ client.on('interactionCreate', async (interaction) => {
         await canal.send({ embeds: [embed] }).catch(() => null);
         sendLog(interaction.guild, logEmbed('Blue', '📢 Anúncio enviado', `**Canal:** ${canal}\n**Título:** ${titulo.slice(0, 100)}`, interaction.user));
         return interaction.reply({ content: `✅ Anúncio postado em ${canal}!${corInvalida ? ' (⚠️ cor inválida, usei a padrão — formato `#FF0000`)' : ''}`, ephemeral: true });
+      }
+
+      if (commandName === 'limpar') {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe pode limpar.', ephemeral: true });
+        const qtd = Math.min(Math.max(interaction.options.getInteger('qtd', true), 1), 100);
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
+        const apagadas = await interaction.channel.bulkDelete(qtd, true).catch(() => null);
+        const n = apagadas ? apagadas.size : 0;
+        sendLog(interaction.guild, logEmbed('Grey', '🧹 Limpeza', `**Canal:** ${interaction.channel}\n**Apagadas:** ${n}\n**Por:** ${interaction.user}`, interaction.user));
+        return interaction.editReply(`🧹 Apaguei **${n}** mensagens! (só msgs com menos de 14 dias)`).catch(() => null);
       }
       return;
     }
@@ -462,6 +479,10 @@ async function doCloseTicket(interaction, ch) {
   }
   const ownerId = getTicketOwnerId(ch);
   const closerId = interaction.user.id;
+  // Gera o transcript ANTES de trancar (garante histórico completo)
+  const transcriptTxt = await buildTranscript(ch).catch(() => null);
+  const transcriptFile = () =>
+    transcriptTxt ? new AttachmentBuilder(Buffer.from(transcriptTxt, 'utf-8'), { name: `transcript-${ch.name}.txt` }) : null;
   const falhas = [];
   // 1) Tira permissão de falar do dono, mantém vendo
   if (ownerId) {
@@ -483,7 +504,8 @@ async function doCloseTicket(interaction, ch) {
   );
   const embed = new EmbedBuilder().setColor('Red').setTitle('🔒 Ticket fechado')
     .setDescription(`Fechado por ${interaction.user}\n\n🔓 Reabrir ou 🗑️ Deletar abaixo.\n\n**Dono do ticket:** avalie o atendimento no menu abaixo! 👇`).setTimestamp();
-  const postado = await ch.send({ embeds: [embed], components: [row] }).catch((e) => e);
+  const tFile = transcriptFile();
+  const postado = await ch.send({ embeds: [embed], components: [row], ...(tFile ? { files: [tFile] } : {}) }).catch((e) => e);
   if (postado instanceof Error) {
     try { await interaction.user.send(`⚠️ Fechei o ticket **#${ch.name}** mas não consegui postar nele (sem permissão de Enviar Mensagens).`).catch(() => null); } catch {}
     sendLog(ch.guild, logEmbed('Red', '⚠️ Ticket fechado com falhas', `**Canal:** #${ch.name}\n**Falhas:** postar msg + ${falhas.join(', ')}`, interaction.user));
@@ -504,7 +526,18 @@ async function doCloseTicket(interaction, ch) {
         const dmEmbed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('🔒 Seu ticket foi fechado')
           .setDescription(`O ticket **#${ch.name}** foi fechado por ${interaction.user}.\n\nVolte ao canal ${ch} e vote de **1 a 5 ⭐** no menu de avaliação!`)
           .setTimestamp();
-        await owner.send({ embeds: [dmEmbed] }).catch(() => null);
+        const dmFile = transcriptFile();
+        await owner.send({ embeds: [dmEmbed], ...(dmFile ? { files: [dmFile] } : {}) }).catch(() => null);
+      }
+    } catch {}
+  }
+  // Transcript também no canal de logs
+  if (transcriptTxt && LOG_CHANNEL_ID) {
+    try {
+      const logCh = await ch.guild.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+      if (logCh && logCh.isTextBased()) {
+        const lf = new AttachmentBuilder(Buffer.from(transcriptTxt, 'utf-8'), { name: `transcript-${ch.name}.txt` });
+        await logCh.send({ content: `📝 Transcript de **#${ch.name}** (fechado por ${interaction.user})`, files: [lf] }).catch(() => null);
       }
     } catch {}
   }

@@ -32,6 +32,8 @@ const commands = [
     .addStringOption((o) => o.setName('titulo').setDescription('Título do anúncio').setRequired(true))
     .addStringOption((o) => o.setName('mensagem').setDescription('Texto (use \\n pra pular linha)').setRequired(true))
     .addStringOption((o) => o.setName('cor').setDescription('Cor hex. Ex: #FF0000').setRequired(false)).toJSON(),
+  new SlashCommandBuilder().setName('limpar').setDescription('[EQUIPE] Apaga até 100 mensagens do canal')
+    .addIntegerOption((o) => o.setName('qtd').setDescription('Quantas? (1-100)').setRequired(true).setMinValue(1).setMaxValue(100)).toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
