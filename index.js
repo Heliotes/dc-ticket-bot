@@ -87,11 +87,37 @@ function isTicketChannel(channel) {
 }
 
 function getTicketOwnerId(channel) {
-  if (channel.topic) {
-    const m = channel.topic.match(/TICKET:(\d+)/);
-    if (m) return m[1];
-  }
-  return null;
+  const t = parseTicketTopic(channel);
+  return t.owner;
+}
+
+// Lê o tópico do ticket: { owner, tipo, criado, motivo, prioridade, fechadoPor, assumidoPor }
+function parseTicketTopic(channel) {
+  const out = {};
+  const topic = (channel && channel.topic) || '';
+  const get = (key) => {
+    const m = topic.match(new RegExp(`${key}:([^|]+)`));
+    return m ? m[1].trim() : null;
+  };
+  out.owner = get('TICKET');
+  out.tipo = get('Tipo');
+  out.criado = get('Criado');
+  out.motivo = get('Motivo');
+  out.prioridade = get('Prioridade');
+  const f = topic.match(/FechadoPor:(\d+)/);
+  out.fechadoPor = f ? f[1] : null;
+  return out;
+}
+
+const PRIORIDADES = {
+  baixa: { label: '🟢 Baixa', sufixo: 'baixa' },
+  media: { label: '🟡 Média', sufixo: 'media' },
+  alta: { label: '🟠 Alta', sufixo: 'alta' },
+  urgente: { label: '🔴 Urgente', sufixo: 'urgente' },
+};
+
+function semSufixoPrioridade(nome) {
+  return nome.replace(/-(baixa|media|alta|urgente)$/, '');
 }
 
 async function sendLog(guild, embed) {
@@ -261,9 +287,49 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'fechar') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um canal de ticket.', ephemeral: true });
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
+        const motivoF = (interaction.options.getString('motivo') || '').slice(0, 500);
         await interaction.deferReply({ ephemeral: true }).catch(() => null);
-        const ok = await doCloseTicket(interaction, interaction.channel);
+        const ok = await doCloseTicket(interaction, interaction.channel, motivoF);
         return interaction.editReply(ok ? '🔒 Ticket fechado!' : '⚠️ Fechei com falhas, veja o canal.').catch(() => null);
+      }
+
+      if (commandName === 'prioridade') {
+        if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
+        if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
+        const nivel = interaction.options.getString('nivel', true);
+        const p = PRIORIDADES[nivel];
+        if (!p) return interaction.reply({ content: '❌ Nível inválido.', ephemeral: true });
+        const ch = interaction.channel;
+        const novoNome = `${semSufixoPrioridade(ch.name.replace(/^fechado-/, ''))}-${p.sufixo}`.slice(0, 100);
+        await ch.setName(novoNome).catch(() => null);
+        const base = (ch.topic || '').replace(/\s*\|\s*Prioridade:[^|]+/g, '');
+        await ch.setTopic(`${base} | Prioridade:${nivel}`.slice(0, 1024)).catch(() => null);
+        await ch.send(`⚡ Prioridade definida como **${p.label}** por ${interaction.user}`).catch(() => null);
+        sendLog(ch.guild, logEmbed('Yellow', '⚡ Prioridade alterada', `**Canal:** ${ch}\n**Nível:** ${p.label}\n**Por:** ${interaction.user}`, interaction.user));
+        return interaction.reply({ content: `⚡ Prioridade: **${p.label}**`, ephemeral: true });
+      }
+
+      if (commandName === 'tickets') {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
+        const abertos = interaction.guild.channels.cache.filter((c) => c.type === ChannelType.GuildText && c.name.startsWith('ticket-'));
+        const fechadosN = interaction.guild.channels.cache.filter((c) => c.type === ChannelType.GuildText && c.name.startsWith('fechado-')).size;
+        if (abertos.size === 0) return interaction.reply({ content: `📭 Nenhum ticket aberto! (${fechadosN} fechados aguardando)`, ephemeral: true });
+        const linhas = [...abertos.values()].slice(0, 20).map((c) => {
+          const t = parseTicketTopic(c);
+          const dono = t.owner ? `<@${t.owner}>` : '?';
+          const tipo = t.tipo || '?';
+          const pri = t.prioridade ? ` • ${PRIORIDADES[t.prioridade]?.label || t.prioridade}` : '';
+          let idade = '';
+          if (t.criado) {
+            const ts = Math.floor(new Date(t.criado).getTime() / 1000);
+            if (!isNaN(ts)) idade = ` • <t:${ts}:R>`;
+          }
+          return `${c} — ${dono} • ${tipo}${pri}${idade}`;
+        });
+        const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle(`🎫 Tickets abertos (${abertos.size})`)
+          .setDescription(linhas.join('\n').slice(0, 4000))
+          .setFooter({ text: `${fechadosN} fechados • mostrando até 20` }).setTimestamp();
+        return interaction.reply({ embeds: [embed], ephemeral: true });
       }
 
       if (commandName === 'adicionar') {
@@ -312,7 +378,7 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'ajuda') {
         const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('❓ Ajuda — Bot de Tickets')
           .setDescription(
-            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot (+ vê se você é ADMIN)\n`/anunciar` — posta anúncio bonito\n`/limpar qtd` — apaga até 100 msgs do canal\n\n**Só ADMIN (1 clique):**\n`/fechar` + botões 🙋 Assumir / 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐ (chega na sua DM), auto-close inativo, anti-link/palavrão'
+            '**Como usuário:**\nVá no painel 🎫 e escolha o tipo. Só abra 1 por vez.\n\n**Comandos (equipe):**\n`/painel-ticket` — posta o painel\n`/adicionar @user` / `/remover @user`\n`/renomear nome` — renomeia canal\n`/transcript` — baixa histórico\n`/stats` — status do bot (+ vê se você é ADMIN)\n`/anunciar` — posta anúncio bonito\n`/limpar qtd` — apaga até 100 msgs do canal\n`/tickets` — lista tickets abertos\n\n**Só ADMIN (1 clique):**\n`/fechar [motivo]` + `/prioridade` + botões 🙋 Assumir / 🔒 Fechar / 🔓 Reabrir / 🗑️ Deletar\n\n**Automático:** motivo obrigatório, avaliação ⭐ (chega na sua DM), auto-close inativo, anti-link/palavrão'
           );
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
@@ -468,7 +534,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // Fecha o ticket em 1 passo (botão Fechar e /fechar usam aqui)
-async function doCloseTicket(interaction, ch) {
+async function doCloseTicket(interaction, ch, motivoFechamento = '') {
   if (ch.name.startsWith('fechado-')) {
     try {
       const msg = '🔒 Esse ticket já está fechado. Use 🔓 Reabrir ou 🗑️ Deletar.';
@@ -503,7 +569,7 @@ async function doCloseTicket(interaction, ch) {
     new ButtonBuilder().setCustomId('delete_ticket').setLabel('Deletar').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
   );
   const embed = new EmbedBuilder().setColor('Red').setTitle('🔒 Ticket fechado')
-    .setDescription(`Fechado por ${interaction.user}\n\n🔓 Reabrir ou 🗑️ Deletar abaixo.\n\n**Dono do ticket:** avalie o atendimento no menu abaixo! 👇`).setTimestamp();
+    .setDescription(`Fechado por ${interaction.user}${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}\n\n🔓 Reabrir ou 🗑️ Deletar abaixo.\n\n**Dono do ticket:** avalie o atendimento no menu abaixo! 👇`).setTimestamp();
   const tFile = transcriptFile();
   const postado = await ch.send({ embeds: [embed], components: [row], ...(tFile ? { files: [tFile] } : {}) }).catch((e) => e);
   if (postado instanceof Error) {
@@ -524,7 +590,7 @@ async function doCloseTicket(interaction, ch) {
       const owner = await client.users.fetch(ownerId).catch(() => null);
       if (owner) {
         const dmEmbed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle('🔒 Seu ticket foi fechado')
-          .setDescription(`O ticket **#${ch.name}** foi fechado por ${interaction.user}.\n\nVolte ao canal ${ch} e vote de **1 a 5 ⭐** no menu de avaliação!`)
+          .setDescription(`O ticket **#${ch.name}** foi fechado por ${interaction.user}.${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}\n\nVolte ao canal ${ch} e vote de **1 a 5 ⭐** no menu de avaliação!`)
           .setTimestamp();
         const dmFile = transcriptFile();
         await owner.send({ embeds: [dmEmbed], ...(dmFile ? { files: [dmFile] } : {}) }).catch(() => null);
@@ -541,7 +607,7 @@ async function doCloseTicket(interaction, ch) {
       }
     } catch {}
   }
-  sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}`, interaction.user));
+  sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}`, interaction.user));
   return true;
 }
 

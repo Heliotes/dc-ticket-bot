@@ -13,7 +13,8 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
 
 const commands = [
   new SlashCommandBuilder().setName('painel-ticket').setDescription('[EQUIPE] Posta o painel de tickets com menu').toJSON(),
-  new SlashCommandBuilder().setName('fechar').setDescription('[ADMIN] Fecha o ticket atual').toJSON(),
+  new SlashCommandBuilder().setName('fechar').setDescription('[ADMIN] Fecha o ticket atual')
+    .addStringOption((o) => o.setName('motivo').setDescription('Motivo do fechamento').setRequired(false)).toJSON(),
   new SlashCommandBuilder().setName('assumir').setDescription('[ADMIN] Assume o atendimento do ticket').toJSON(),
   new SlashCommandBuilder()
     .setName('adicionar').setDescription('[EQUIPE] Adiciona alguém ao ticket')
@@ -34,6 +35,15 @@ const commands = [
     .addStringOption((o) => o.setName('cor').setDescription('Cor hex. Ex: #FF0000').setRequired(false)).toJSON(),
   new SlashCommandBuilder().setName('limpar').setDescription('[EQUIPE] Apaga até 100 mensagens do canal')
     .addIntegerOption((o) => o.setName('qtd').setDescription('Quantas? (1-100)').setRequired(true).setMinValue(1).setMaxValue(100)).toJSON(),
+  new SlashCommandBuilder().setName('tickets').setDescription('[EQUIPE] Lista os tickets abertos').toJSON(),
+  new SlashCommandBuilder().setName('prioridade').setDescription('[ADMIN] Define a prioridade do ticket')
+    .addStringOption((o) => o.setName('nivel').setDescription('Nível').setRequired(true)
+      .addChoices(
+        { name: '🟢 Baixa', value: 'baixa' },
+        { name: '🟡 Média', value: 'media' },
+        { name: '🟠 Alta', value: 'alta' },
+        { name: '🔴 Urgente', value: 'urgente' },
+      )).toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
