@@ -296,9 +296,10 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'prioridade') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
         const nivel = interaction.options.getString('nivel', true);
         const p = PRIORIDADES[nivel];
-        if (!p) return interaction.reply({ content: '❌ Nível inválido.', ephemeral: true });
+        if (!p) return interaction.editReply('❌ Nível inválido.').catch(() => null);
         const ch = interaction.channel;
         const novoNome = `${semSufixoPrioridade(ch.name.replace(/^fechado-/, ''))}-${p.sufixo}`.slice(0, 100);
         await ch.setName(novoNome).catch(() => null);
@@ -306,7 +307,7 @@ client.on('interactionCreate', async (interaction) => {
         await ch.setTopic(`${base} | Prioridade:${nivel}`.slice(0, 1024)).catch(() => null);
         await ch.send(`⚡ Prioridade definida como **${p.label}** por ${interaction.user}`).catch(() => null);
         sendLog(ch.guild, logEmbed('Yellow', '⚡ Prioridade alterada', `**Canal:** ${ch}\n**Nível:** ${p.label}\n**Por:** ${interaction.user}`, interaction.user));
-        return interaction.reply({ content: `⚡ Prioridade: **${p.label}**`, ephemeral: true });
+        return interaction.editReply(`⚡ Prioridade: **${p.label}**`).catch(() => null);
       }
 
       if (commandName === 'tickets') {
@@ -335,36 +336,40 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === 'adicionar') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
         const target = interaction.options.getUser('usuario');
         const r = await interaction.channel.permissionOverwrites.edit(target.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch((e) => e);
-        if (r instanceof Error) return interaction.reply({ content: '❌ Não consegui adicionar. O cargo do bot precisa estar **acima** dos cargos do servidor.', ephemeral: true });
-        return interaction.reply(`✅ ${target} adicionado ao ticket.`);
+        if (r instanceof Error) return interaction.editReply('❌ Não consegui adicionar. O cargo do bot precisa estar **acima** dos cargos do servidor.').catch(() => null);
+        return interaction.editReply(`✅ ${target} adicionado ao ticket.`).catch(() => null);
       }
 
       if (commandName === 'remover') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
         const target = interaction.options.getUser('usuario');
         const ownerId = getTicketOwnerId(interaction.channel);
-        if (target.id === ownerId) return interaction.reply({ content: '❌ Não dá pra remover o dono do ticket.', ephemeral: true });
+        if (target.id === ownerId) return interaction.editReply('❌ Não dá pra remover o dono do ticket.').catch(() => null);
         await interaction.channel.permissionOverwrites.delete(target.id).catch(() => null);
-        return interaction.reply(`✅ ${target} removido do ticket.`);
+        return interaction.editReply(`✅ ${target} removido do ticket.`).catch(() => null);
       }
 
       if (commandName === 'renomear') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe.', ephemeral: true });
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
         const nome = interaction.options.getString('nome', true).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 90);
-        if (!nome) return interaction.reply({ content: '❌ Nome inválido. Use letras e números (ex: `suporte-urgente`).', ephemeral: true });
+        if (!nome) return interaction.editReply('❌ Nome inválido. Use letras e números (ex: `suporte-urgente`).').catch(() => null);
         await interaction.channel.setName(nome).catch(() => null);
-        return interaction.reply(`✅ Canal renomeado para \`${nome}\``);
+        return interaction.editReply(`✅ Canal renomeado para \`${nome}\``).catch(() => null);
       }
 
       if (commandName === 'assumir') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
-        await interaction.channel.setTopic(`${interaction.channel.topic || ''} | Assumido por:${interaction.user.tag}`);
-        return interaction.reply(`🙋 Ticket assumido por ${interaction.user}!`);
+        await interaction.deferReply().catch(() => null);
+        await interaction.channel.setTopic(`${interaction.channel.topic || ''} | Assumido por:${interaction.user.tag}`).catch(() => null);
+        return interaction.editReply(`🙋 Ticket assumido por ${interaction.user}!`).catch(() => null);
       }
 
       if (commandName === 'transcript') {
@@ -402,6 +407,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (commandName === 'anunciar') {
         if (!isStaff(interaction.member)) return interaction.reply({ content: '❌ Só a equipe pode anunciar.', ephemeral: true });
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
         const canal = interaction.options.getChannel('canal', true);
         const titulo = interaction.options.getString('titulo', true);
         const mensagem = interaction.options.getString('mensagem', true).replace(/\\n/g, '\n');
@@ -413,7 +419,7 @@ client.on('interactionCreate', async (interaction) => {
           .setFooter({ text: `Anúncio por ${interaction.user.tag}` }).setTimestamp();
         await canal.send({ embeds: [embed] }).catch(() => null);
         sendLog(interaction.guild, logEmbed('Blue', '📢 Anúncio enviado', `**Canal:** ${canal}\n**Título:** ${titulo.slice(0, 100)}`, interaction.user));
-        return interaction.reply({ content: `✅ Anúncio postado em ${canal}!${corInvalida ? ' (⚠️ cor inválida, usei a padrão — formato `#FF0000`)' : ''}`, ephemeral: true });
+        return interaction.editReply(`✅ Anúncio postado em ${canal}!${corInvalida ? ' (⚠️ cor inválida, usei a padrão — formato `#FF0000`)' : ''}`).catch(() => null);
       }
 
       if (commandName === 'limpar') {
@@ -491,10 +497,11 @@ client.on('interactionCreate', async (interaction) => {
       }
       if (id === 'reopen_ticket') {
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
+        await interaction.deferUpdate().catch(() => null);
         const ownerId = getTicketOwnerId(ch);
         if (ownerId) await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch(() => null);
         await ch.setName(ch.name.replace(/^fechado-/, '').slice(0, 100)).catch(() => null);
-        return interaction.reply(`🔓 Ticket reaberto por ${interaction.user}!`);
+        return interaction.followUp(`🔓 Ticket reaberto por ${interaction.user}!`).catch(() => null);
       }
 
       if (id === 'delete_ticket') {
@@ -508,8 +515,9 @@ client.on('interactionCreate', async (interaction) => {
       if (id === 'claim_ticket') {
         if (!isTicketChannel(ch)) return interaction.reply({ content: '❌ Não é um ticket.', ephemeral: true });
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
-        await ch.setTopic(`${ch.topic || ''} | Assumido por:${interaction.user.tag}`).catch(() => null);
-        return interaction.reply(`🙋 ${interaction.user} assumiu o atendimento!`);
+        await interaction.deferUpdate().catch(() => null);
+        await ch.setTopic(`${ch.topic || ''} | Assumido por:${interaction.user.tag}`.slice(0, 1024)).catch(() => null);
+        return interaction.followUp(`🙋 ${interaction.user} assumiu o atendimento!`).catch(() => null);
       }
 
       if (id === 'transcript_ticket') {
