@@ -153,6 +153,8 @@ async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   }
 
   await interaction.deferReply({ ephemeral: true });
+  // Se o defer falhou (token expirado), aborta: nada responderia mesmo
+  if (!interaction.deferred) return;
 
   const overwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -187,7 +189,7 @@ async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   });
 
   if (!channel) {
-    return interaction.editReply('❌ Não consegui criar o canal. Verifique se o bot tem permissão **Gerenciar Canais** e se a categoria/cargo estão certos no .env');
+    return interaction.editReply('❌ Não consegui criar o canal. Verifique se o bot tem permissão **Gerenciar Canais** e se a categoria/cargo estão certos no .env').catch(() => null);
   }
 
   const embed = new EmbedBuilder()
@@ -207,7 +209,7 @@ async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   const staffMention = STAFF_ROLE_ID ? `<@&${STAFF_ROLE_ID}>` : 'Equipe';
   await channel.send({ content: `${staffMention} | ${user}`, embeds: [embed], components: [row] });
 
-  await interaction.editReply(`✅ Ticket criado: ${channel}`);
+  await interaction.editReply(`✅ Ticket criado: ${channel}`).catch(() => null);
 
   sendLog(guild, logEmbed('Green', '📩 Ticket criado', `**Canal:** ${channel}\n**Tipo:** ${type.label}`, user,
     [{ name: 'Criado em', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }]));
@@ -289,6 +291,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         const motivoF = (interaction.options.getString('motivo') || '').slice(0, 500);
         await interaction.deferReply({ ephemeral: true }).catch(() => null);
+        if (!interaction.deferred) return;
         const ok = await doCloseTicket(interaction, interaction.channel, motivoF);
         return interaction.editReply(ok ? '🔒 Ticket fechado!' : '⚠️ Fechei com falhas, veja o canal.').catch(() => null);
       }
@@ -374,7 +377,8 @@ client.on('interactionCreate', async (interaction) => {
 
       if (commandName === 'transcript') {
         if (!isTicketChannel(interaction.channel)) return interaction.reply({ content: '❌ Use dentro de um ticket.', ephemeral: true });
-        await interaction.deferReply();
+        await interaction.deferReply().catch(() => null);
+        if (!interaction.deferred) return;
         const txt = await buildTranscript(interaction.channel);
         const file = new AttachmentBuilder(Buffer.from(txt, 'utf-8'), { name: `transcript-${interaction.channel.name}.txt` });
         return interaction.editReply({ content: '📝 Transcript:', files: [file] });
@@ -414,7 +418,7 @@ client.on('interactionCreate', async (interaction) => {
         const corRaw = (interaction.options.getString('cor') || '').trim();
         const corInvalida = corRaw && !/^#[0-9A-Fa-f]{6}$/.test(corRaw);
         const cor = corInvalida ? EMBED_COLOR : (corRaw || EMBED_COLOR);
-        if (!canal.isTextBased()) return interaction.reply({ content: '❌ Escolha um canal de texto.', ephemeral: true });
+        if (!canal.isTextBased()) return interaction.editReply('❌ Escolha um canal de texto.').catch(() => null);
         const embed = new EmbedBuilder().setColor(cor).setTitle(titulo.slice(0, 256)).setDescription(mensagem.slice(0, 4000))
           .setFooter({ text: `Anúncio por ${interaction.user.tag}` }).setTimestamp();
         await canal.send({ embeds: [embed] }).catch(() => null);
@@ -521,7 +525,8 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (id === 'transcript_ticket') {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
+        if (!interaction.deferred) return;
         const txt = await buildTranscript(ch);
         const file = new AttachmentBuilder(Buffer.from(txt, 'utf-8'), { name: `transcript-${ch.name}.txt` });
         return interaction.editReply({ content: '📝 Aqui está:', files: [file] });
@@ -584,7 +589,7 @@ async function doCloseTicket(interaction, ch, motivoFechamento = '') {
     try { await interaction.user.send(`⚠️ Fechei o ticket **#${ch.name}** mas não consegui postar nele (sem permissão de Enviar Mensagens).`).catch(() => null); } catch {}
     sendLog(ch.guild, logEmbed('Red', '⚠️ Ticket fechado com falhas', `**Canal:** #${ch.name}\n**Falhas:** postar msg + ${falhas.join(', ')}`, interaction.user));
     try { await interaction.followUp({ content: `🔒 Ticket trancado, mas tive falhas: ${['postar msg', ...falhas].join(', ')}.`, ephemeral: true }); } catch {}
-    return;
+    return false;
   }
   if (falhas.length) await ch.send(`⚠️ Avisos (não críticos): ${falhas.join(', ')}.`).catch(() => null);
   const rateMenu = new StringSelectMenuBuilder()
