@@ -610,11 +610,12 @@ client.on('interactionCreate', async (interaction) => {
             || await guild.channels.create({ name: 'avaliacoes', type: ChannelType.GuildText, parent: cat.id }).catch(() => null);
         }
         if (aval) rel.push(`⭐ Avaliações em ${aval}`);
-        // 4) Salva pra usar nos tickets (tickets nascem dentro da categoria)
-        FILE_CFG.ticketCategoryId = cat.id;
-        FILE_CFG.avalChannelId = aval ? aval.id : FILE_CFG.avalChannelId;
+        // 4) Salva avaliações; categoria de tickets só muda se estava vazia/inválida (não rouba a atual)
+        if (aval) FILE_CFG.avalChannelId = aval.id;
+        const catAtualOk = TICKET_CATEGORY_ID ? await guild.channels.fetch(TICKET_CATEGORY_ID).catch(() => null) : null;
+        if (!catAtualOk) FILE_CFG.ticketCategoryId = cat.id;
         saveFileCfg();
-        if (!process.env.TICKET_CATEGORY_ID) TICKET_CATEGORY_ID = cat.id;
+        if (!process.env.TICKET_CATEGORY_ID && !catAtualOk) TICKET_CATEGORY_ID = cat.id;
         if (aval && !process.env.AVAL_CHANNEL_ID) AVAL_CHANNEL_ID = aval.id;
         pushEvent('⚙️', `Setup executado por ${interaction.user.tag}`);
         return interaction.editReply(`✅ **Setup pronto!**\n${rel.join('\n')}\n\n📌 Tickets novos nascem dentro da categoria.\n💡 No Render, prefira fixar via env: \`TICKET_CATEGORY_ID=${cat.id}\`${aval ? ` e \`AVAL_CHANNEL_ID=${aval.id}\`` : ''}`).catch(() => null);
