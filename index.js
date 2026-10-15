@@ -1,6 +1,11 @@
 // Bot de Tickets / Suporte - discord.js v14
 // Feito pra ficar 24h no Render/Railway de graça + seguro (token só no .env)
 require('dotenv').config();
+
+// Blindagem: nada derruba o processo — loga e continua online
+process.on('unhandledRejection', (e) => console.error('⚠️ Rejeição não tratada (bot continua):', e && e.message ? e.message : e));
+process.on('uncaughtException', (e) => console.error('⚠️ Exceção não tratada (bot continua):', e && e.message ? e.message : e));
+
 const express = require('express');
 const {
   Client,
@@ -93,7 +98,7 @@ async function sendLog(guild, embed) {
   if (!LOG_CHANNEL_ID) return;
   try {
     const ch = await guild.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
-    if (ch && ch.isTextBased()) ch.send({ embeds: [embed] });
+    if (ch && ch.isTextBased()) await ch.send({ embeds: [embed] }).catch(() => null);
   } catch {}
 }
 
@@ -208,6 +213,8 @@ async function buildTranscript(channel) {
   return header + lines.join('\n');
 }
 
+client.on('error', (e) => console.error('⚠️ Client error (bot continua):', e && e.message ? e.message : e));
+
 // ---------- 6. Interações ----------
 client.on('interactionCreate', async (interaction) => {
   try {
@@ -219,6 +226,8 @@ client.on('interactionCreate', async (interaction) => {
         if (!isStaff(interaction.member)) {
           return interaction.reply({ content: '❌ Só a equipe pode criar o painel.', ephemeral: true });
         }
+        // Defer primeiro: garante resposta mesmo com lag (evita Unknown interaction)
+        await interaction.deferReply().catch(() => null);
         const embed = new EmbedBuilder()
           .setColor(EMBED_COLOR)
           .setTitle('🎫 Central de Atendimento')
@@ -239,7 +248,7 @@ client.on('interactionCreate', async (interaction) => {
             }))
           );
 
-        return interaction.reply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] });
+        return interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] }).catch(() => null);
       }
 
       if (commandName === 'fechar') {
@@ -574,7 +583,7 @@ client.on('guildMemberAdd', async (member) => {
         const text = WELCOME_MESSAGE.replace('{user}', `${member}`).replace('{server}', member.guild.name);
         const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle(`👋 Bem-vindo(a), ${member.user.username}!`)
           .setDescription(text).setThumbnail(member.user.displayAvatarURL()).setTimestamp();
-        ch.send({ embeds: [embed] });
+        await ch.send({ embeds: [embed] }).catch(() => null);
       }
     }
     sendLog(member.guild, logEmbed('Green', '📥 Entrou no servidor', `**Conta criada:** <t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, member.user));
@@ -587,4 +596,7 @@ client.on('guildMemberRemove', async (member) => {
   } catch {}
 });
 
-client.login(TOKEN);
+client.login(TOKEN).catch((e) => {
+  console.error('❌ Falha no login — confira o TOKEN:', e && e.message ? e.message : e);
+  process.exit(1);
+});
