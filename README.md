@@ -81,7 +81,18 @@ No `.env` preencha:
 - Dê ao bot cargo acima do cargo Staff na hierarquia do servidor, senão ele não cria canal.
 
 ## Dúvidas comuns
-
 **Comandos não aparecem?** Rode `npm run deploy` e espere 2 min. Veja se bot tem scope `applications.commands`.
 **Não cria canal?** Falta permissão Gerenciar Canais / categoria errada.
 **Bot offline no Render?** Veja Logs no painel. 99% é TOKEN errado ou variável faltando.
+
+## 6️⃣ Painel web de administração
+
+O bot serve um mini-site: status (uptime, ping, tickets abertos/fechados) + últimos 200 eventos, atualizado sozinho.
+
+1. Defina `ADMIN_KEY` (senha forte, diferente do TOKEN). Gere uma:
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+   ```
+2. No Render, adicione `ADMIN_KEY` nas Environment Variables (ou no `.env` local).
+3. Acesse `https://seu-bot.onrender.com/?key=SUA_CHAVE` (local: `http://localhost:3000/?key=...`).
+4. `/health` continua público (é o que o UptimeRobot pinga).

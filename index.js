@@ -42,13 +42,82 @@ if (!TOKEN || TOKEN === 'seu_token_aqui') {
   process.exit(1);
 }
 
-// ---------- 2. Keep-alive pro Render (health check) ----------
-// O Render derruba serviço sem porta aberta. Isso mantém online + UptimeRobot pode pingar.
+// ---------- 2. Keep-alive + PAINEL WEB de administração ----------
 const app = express();
-app.get('/', (req, res) => res.send('✅ Bot de tickets online!'));
 app.get('/health', (req, res) => res.json({ status: 'online', uptime: process.uptime() }));
+
+const ADMIN_KEY = process.env.ADMIN_KEY || '';
+function needKey(req, res, next) {
+  if (!ADMIN_KEY) return res.status(503).send('Dashboard desativado: defina ADMIN_KEY nas variáveis de ambiente (Render) ou no .env.');
+  const k = req.query.key || req.headers['x-admin-key'];
+  if (k !== ADMIN_KEY) return res.status(401).send('Não autorizado. Passe ?key=SUA_CHAVE na URL.');
+  next();
+}
+
+// Log de eventos em memória (últimos 200) — alimenta o painel
+const EVENTS = [];
+function pushEvent(type, text) {
+  EVENTS.unshift({ t: new Date().toISOString(), type, text: String(text).slice(0, 300) });
+  if (EVENTS.length > 200) EVENTS.pop();
+}
+
+function getStats() {
+  let abertos = 0, fechados = 0;
+  for (const [, g] of client.guilds.cache) {
+    for (const [, c] of g.channels.cache) {
+      if (c.type !== ChannelType.GuildText) continue;
+      if (c.name.startsWith('ticket-')) abertos++;
+      else if (c.name.startsWith('fechado-')) fechados++;
+    }
+  }
+  const up = Math.floor(process.uptime());
+  return {
+    online: true, bot: client.user ? client.user.tag : 'conectando...',
+    uptime: `${Math.floor(up / 3600)}h ${Math.floor((up % 3600) / 60)}m ${up % 60}s`,
+    ping: client.ws.ping, guilds: client.guilds.cache.size,
+    abertos, fechados, now: new Date().toISOString(),
+  };
+}
+
+const DASH_HTML = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🎫 Painel do Bot</title><style>
+body{background:#0f1117;color:#e6e6e6;font-family:system-ui,sans-serif;margin:0;padding:20px}
+h1{font-size:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
+.card{background:#1a1d27;border-radius:10px;padding:14px}.card b{font-size:22px;display:block}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid #2a2e3d;padding:8px;text-align:left}
+th{color:#9aa3b2}.ok{color:#57f287}.warn{color:#fee75c}.small{color:#9aa3b2;font-size:12px}
+button{background:#5865f2;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}
+</style></head><body>
+<h1>🎫 Painel do Bot <span class="small" id="bot"></span></h1>
+<div class="cards" id="cards"></div>
+<button onclick="load()">🔄 Atualizar</button> <span class="small">auto a cada 15s</span>
+<h2>📋 Últimos eventos</h2>
+<table><thead><tr><th>Hora</th><th>Tipo</th><th>Detalhe</th></tr></thead><tbody id="ev"></tbody></table>
+<script>
+let key = new URLSearchParams(location.search).get('key') || localStorage.getItem('admkey') || '';
+if(!key){ key = prompt('Chave de admin (ADMIN_KEY):') || ''; localStorage.setItem('admkey', key); location.search = '?key=' + encodeURIComponent(key); }
+async function load(){
+  try{
+    const s = await (await fetch('/api/stats?key=' + encodeURIComponent(key))).json();
+    document.getElementById('bot').textContent = s.bot + ' • ' + s.now.replace('T',' ').slice(0,19);
+    document.getElementById('cards').innerHTML =
+      card('🟢 Status','Online') + card('⏱️ Uptime', s.uptime) + card('📶 Ping', s.ping + 'ms') +
+      card('🏠 Servidores', s.guilds) + card('🎫 Abertos', s.abertos) + card('🔒 Fechados', s.fechados);
+    const e = await (await fetch('/api/events?key=' + encodeURIComponent(key))).json();
+    document.getElementById('ev').innerHTML = e.map(x =>
+      '<tr><td class="small">' + x.t.replace('T',' ').slice(0,19) + '</td><td>' + x.type + '</td><td>' + x.text + '</td></tr>').join('') || '<tr><td colspan=3>Nenhum evento ainda</td></tr>';
+  }catch(err){ document.getElementById('ev').innerHTML = '<tr><td colspan=3>Erro ao carregar (chave errada?)</td></tr>'; }
+}
+function card(t,v){ return '<div class="card">' + t + '<b>' + v + '</b></div>'; }
+load(); setInterval(load, 15000);
+</script></body></html>`;
+
+app.get('/', needKey, (req, res) => res.send(DASH_HTML));
+app.get('/api/stats', needKey, (req, res) => res.json(getStats()));
+app.get('/api/events', needKey, (req, res) => res.json(EVENTS));
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌐 Keep-alive rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🌐 Painel + keep-alive na porta ${PORT} (defina ADMIN_KEY pra liberar o painel)`));
 
 // ---------- 3. Client ----------
 const client = new Client({
@@ -210,6 +279,7 @@ async function createTicket(interaction, typeKey, motivo = 'Não informado') {
   await channel.send({ content: `${staffMention} | ${user}`, embeds: [embed], components: [row] });
 
   await interaction.editReply(`✅ Ticket criado: ${channel}`).catch(() => null);
+  pushEvent('📩', `Ticket ${channel.name} aberto por ${user.tag} (${type.label})`);
 
   sendLog(guild, logEmbed('Green', '📩 Ticket criado', `**Canal:** ${channel}\n**Tipo:** ${type.label}`, user,
     [{ name: 'Criado em', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }]));
@@ -310,6 +380,7 @@ client.on('interactionCreate', async (interaction) => {
         await ch.setTopic(`${base} | Prioridade:${nivel}`.slice(0, 1024)).catch(() => null);
         await ch.send(`⚡ Prioridade definida como **${p.label}** por ${interaction.user}`).catch(() => null);
         sendLog(ch.guild, logEmbed('Yellow', '⚡ Prioridade alterada', `**Canal:** ${ch}\n**Nível:** ${p.label}\n**Por:** ${interaction.user}`, interaction.user));
+        pushEvent('⚡', `Prioridade ${p.label} em ${ch.name} por ${interaction.user.tag}`);
         return interaction.editReply(`⚡ Prioridade: **${p.label}**`).catch(() => null);
       }
 
@@ -433,6 +504,7 @@ client.on('interactionCreate', async (interaction) => {
         const apagadas = await interaction.channel.bulkDelete(qtd, true).catch(() => null);
         const n = apagadas ? apagadas.size : 0;
         sendLog(interaction.guild, logEmbed('Grey', '🧹 Limpeza', `**Canal:** ${interaction.channel}\n**Apagadas:** ${n}\n**Por:** ${interaction.user}`, interaction.user));
+        pushEvent('🧹', `${n} msgs apagadas em #${interaction.channel.name} por ${interaction.user.tag}`);
         return interaction.editReply(`🧹 Apaguei **${n}** mensagens! (só msgs com menos de 14 dias)`).catch(() => null);
       }
       return;
@@ -473,6 +545,7 @@ client.on('interactionCreate', async (interaction) => {
       const stars = '⭐'.repeat(parseInt(nota)) || '⭐';
       await interaction.reply({ content: `Obrigado! Avaliação registrada: ${stars} (${nota}/5)`, ephemeral: true });
       sendLog(interaction.guild, logEmbed('Gold', '⭐ Avaliação recebida', `**Canal:** #${interaction.channel.name}\n**Nota:** ${stars} (${nota}/5)`, interaction.user));
+      pushEvent('⭐', `Avaliação ${nota}/5 em #${interaction.channel.name} por ${interaction.user.tag}`);
       // DM pro admin que fechou com o resultado
       try {
         const m = (interaction.channel.topic || '').match(/FechadoPor:(\d+)/);
@@ -505,6 +578,7 @@ client.on('interactionCreate', async (interaction) => {
         const ownerId = getTicketOwnerId(ch);
         if (ownerId) await ch.permissionOverwrites.edit(ownerId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch(() => null);
         await ch.setName(ch.name.replace(/^fechado-/, '').slice(0, 100)).catch(() => null);
+        pushEvent('🔓', `Ticket #${ch.name} reaberto por ${interaction.user.tag}`);
         return interaction.followUp(`🔓 Ticket reaberto por ${interaction.user}!`).catch(() => null);
       }
 
@@ -512,6 +586,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await interaction.reply('🗑️ Deletando em 5 segundos...');
         sendLog(ch.guild, logEmbed('DarkRed', '🗑️ Ticket deletado', `**Canal:** #${ch.name}\n**Deletado por:** ${interaction.user}`, interaction.user));
+        pushEvent('🗑️', `Ticket #${ch.name} deletado por ${interaction.user.tag}`);
         setTimeout(() => ch.delete().catch(() => null), 5000);
         return;
       }
@@ -521,6 +596,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!isAdmin(interaction.member)) { await denyAdmin(interaction); return; }
         await interaction.deferUpdate().catch(() => null);
         await ch.setTopic(`${ch.topic || ''} | Assumido por:${interaction.user.tag}`.slice(0, 1024)).catch(() => null);
+        pushEvent('🙋', `Ticket #${ch.name} assumido por ${interaction.user.tag}`);
         return interaction.followUp(`🙋 ${interaction.user} assumiu o atendimento!`).catch(() => null);
       }
 
@@ -621,6 +697,7 @@ async function doCloseTicket(interaction, ch, motivoFechamento = '') {
     } catch {}
   }
   sendLog(ch.guild, logEmbed('Red', '🔒 Ticket fechado', `**Canal:** #${ch.name}\n**Fechado por:** ${interaction.user}${motivoFechamento ? `\n**Motivo:** ${motivoFechamento.slice(0, 500)}` : ''}`, interaction.user));
+  pushEvent('🔒', `Ticket #${ch.name} fechado por ${interaction.user.tag}${motivoFechamento ? ` (${motivoFechamento.slice(0, 80)})` : ''}`);
   return true;
 }
 
@@ -688,6 +765,7 @@ client.on('messageCreate', async (msg) => {
     const warn = await msg.channel.send(`⚠️ ${msg.author}, ${motivo} não é permitido aqui!`).catch(() => null);
     if (warn) setTimeout(() => warn.delete().catch(() => null), 8000);
     sendLog(msg.guild, logEmbed('Orange', '🛡️ Auto-mod', `**Por:** ${msg.author}\n**Canal:** ${msg.channel}\n**Motivo:** ${motivo}\n**Mensagem:** ${content.slice(0, 500)}`, msg.author));
+    pushEvent('🛡️', `Auto-mod: ${motivo} por ${msg.author.tag} em #${msg.channel.name}`);
   } catch {}
 });
 

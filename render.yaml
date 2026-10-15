@@ -30,3 +30,5 @@ services:
         sync: false
       - key: BADWORDS
         sync: false
+      - key: ADMIN_KEY
+        sync: false
